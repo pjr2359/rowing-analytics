@@ -49,6 +49,8 @@ CREATE TABLE result (
     margin FLOAT -- margin in seconds
 );
 
+
+
 -- Create the 'erg_data' table
 CREATE TABLE erg_data (
     erg_data_id SERIAL PRIMARY KEY,
