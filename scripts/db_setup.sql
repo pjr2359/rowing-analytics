@@ -1,28 +1,61 @@
--- Table to store erg data
+-- Create the 'rower' table
+CREATE TABLE rower (
+    rower_id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    weight FLOAT,
+    side VARCHAR(10)
+);
+
+-- Create the 'boat' table
+CREATE TABLE boat (
+    boat_id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    boat_class VARCHAR(10) -- e.g., '8+', '4+', '4-'
+);
+
+-- Create the 'event' table
+CREATE TABLE event (
+    event_id SERIAL PRIMARY KEY,
+    event_date DATE NOT NULL,
+    event_name VARCHAR(100)
+);
+
+-- Create the 'piece' table
+CREATE TABLE piece (
+    piece_id SERIAL PRIMARY KEY,
+    event_id INTEGER REFERENCES event(event_id),
+    piece_number INTEGER,
+    distance INTEGER, -- in meters
+    description VARCHAR(255)
+);
+
+-- Create the 'lineup' table
+CREATE TABLE lineup (
+    lineup_id SERIAL PRIMARY KEY,
+    piece_id INTEGER REFERENCES piece(piece_id),
+    boat_id INTEGER REFERENCES boat(boat_id),
+    rower_id INTEGER REFERENCES rower(rower_id),
+    seat_number INTEGER,
+    is_coxswain BOOLEAN DEFAULT FALSE
+);
+
+-- Create the 'result' table
+CREATE TABLE result (
+    result_id SERIAL PRIMARY KEY,
+    piece_id INTEGER REFERENCES piece(piece_id),
+    boat_id INTEGER REFERENCES boat(boat_id),
+    time FLOAT, -- total time in seconds
+    split FLOAT, -- split time in seconds
+    margin FLOAT -- margin in seconds
+);
+
+-- Create the 'erg_data' table
 CREATE TABLE erg_data (
-    id SERIAL PRIMARY KEY,
-    side VARCHAR(10),
-    name VARCHAR(100),
+    erg_data_id SERIAL PRIMARY KEY,
+    rower_id INTEGER REFERENCES rower(rower_id),
+    test_date DATE,
     overall_split FLOAT,
     watts_per_lb FLOAT,
     weight FLOAT,
-    pacing_1st FLOAT,
-    pacing_2nd FLOAT,
-    pacing_3rd FLOAT
+    pacing FLOAT[] -- Array of pacing intervals
 );
-
--- Table to store on-water race data
-CREATE TABLE water_data (
-    id SERIAL PRIMARY KEY,
-    name_1 VARCHAR(100),
-    lineup_1 VARCHAR(100),
-    name_2 VARCHAR(100),
-    lineup_2 VARCHAR(100),
-    name_3 VARCHAR(100),
-    lineup_3 VARCHAR(100),
-    name_4 VARCHAR(100)
-);
-
--- Example JOIN: If you want to query both datasets by rower name:
-SELECT * FROM erg_data
-JOIN water_data ON erg_data.name = water_data.name_1;
