@@ -61,3 +61,22 @@ CREATE TABLE erg_data (
     weight FLOAT,
     pacing FLOAT[] -- Array of pacing intervals
 );
+
+
+-- Create the 'seat_race' table
+CREATE TABLE seat_race (
+    seat_race_id SERIAL PRIMARY KEY,
+    event_id INTEGER REFERENCES event(event_id),
+    piece_numbers INTEGER[],
+    rower_id_1 INTEGER REFERENCES rower(rower_id),
+    rower_id_2 INTEGER REFERENCES rower(rower_id),
+    time_difference FLOAT,
+    winner_id INTEGER REFERENCES rower(rower_id),
+    notes TEXT
+);
+
+CREATE TABLE event (
+    event_id SERIAL PRIMARY KEY,
+    event_date DATE NOT NULL,
+    event_name VARCHAR(100)
+);
