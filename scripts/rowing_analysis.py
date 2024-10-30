@@ -4,9 +4,14 @@ import pandas as pd
 from sqlalchemy import create_engine
 import matplotlib.pyplot as plt
 import seaborn as sns
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
+
+password = os.getenv('PASSWORD')
 # Database connection setup
-engine = create_engine('postgresql://postgres:Conan_Stephens27@localhost/rowing-analytics')
+engine = create_engine('postgresql://postgres:'+password+'@localhost/rowing-analytics')
 
 # GMS times for boat classes and rankings (in seconds)
 GMS_TIMES = {
