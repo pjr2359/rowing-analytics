@@ -8,13 +8,15 @@ import re
 import logging
 import sys
 import traceback
+from dotenv import load_dotenv
+load_dotenv()
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)  # Change to DEBUG for detailed logs
 logger = logging.getLogger(__name__)
-
+password = os.getenv('PASSWORD')
 # Database connection setup
-engine = create_engine('postgresql+psycopg2://postgres:Conan_Stephens27@localhost:5432/rowing-analytics')
+engine = create_engine('postgresql+psycopg2://postgres:'+password+'@localhost:5432/rowing-analytics')
 
 def parse_csv(file_path):
     # Read the CSV without headers to keep raw data
