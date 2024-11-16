@@ -18,19 +18,18 @@ CREATE TABLE rower (
     side VARCHAR(10)
 );
 
--- Create the updated 'boat' table
+-- Create the 'boat' table
 CREATE TABLE boat (
     boat_id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    boat_class VARCHAR(10), -- e.g., '8+', '4+', '4-'
-    boat_rank INTEGER,      -- e.g., 1 for 1v, 2 for 2v
-    UNIQUE(name, boat_class, boat_rank)
+    boat_class VARCHAR(10),  -- e.g., '8+', '4+', '4-'
+    boat_rank INTEGER        -- e.g., 1 for 1v, 2 for 2v
 );
 
 -- Create the 'event' table
 CREATE TABLE event (
     event_id SERIAL PRIMARY KEY,
-    event_date DATE ,
+    event_date DATE,
     event_name VARCHAR(100)
 );
 

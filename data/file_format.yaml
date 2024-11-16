@@ -1,0 +1,53 @@
+file_format:
+  name: Water Data CSV
+  description: CSV files containing rowing data, organized by dates, pieces, splits, and results.
+  general_structure:
+    - Row 1: Date (e.g., 9/4/2024, 10/5/2024), followed by metadata columns.
+    - Row 2: Headers or labels for the data (may contain team names, roles, or other descriptors).
+    - Subsequent rows: Contain boat, rower, coxswain, times, splits, and margin data.
+    - Results and switched pieces are mentioned near the end of each file.
+  columns:
+    - "Date":
+        description: The first cell in the first row contains the date of the event.
+    - "Boat":
+        description: Name of the boat (e.g., Defiance, White Stripes).
+    - "Rower Positions":
+        description: Positions within the boat from 8 to 1 (e.g., rower names, paired rowers, or empty cells).
+    - "Times":
+        description: Times recorded for each piece.
+        format: mm:ss.ss
+    - "Split":
+        description: Average time per split for each piece.
+        format: mm:ss.ss
+    - "Margin":
+        description: The time difference relative to a base boat or rower.
+        format: mm:ss.ss or omitted if not applicable.
+    - "Switched Pieces":
+        description: Indicates if rowers were swapped between pieces.
+    - "Results":
+        description: Describes the winner or margin for the competition.
+  special_cases:
+    - Some cells may be empty, particularly for unfilled boat positions.
+    - Margins may not be available for all rows.
+    - Results are often summarized in natural language.
+  interpretation_notes:
+    - Each "Piece" row indicates a time for a specific trial within the event.
+    - "Split" rows provide split times corresponding to each piece.
+    - "Margin" rows indicate the performance gap between boats.
+  file_specific_notes:
+    - Column headers may vary slightly in naming across files.
+    - For paired rowers, names may be joined with a slash (e.g., Alston/Xu).
+    - The last rows in the files often summarize results and switched pieces.
+
+examples:
+  row_1:
+    date: "9/4/2024"
+    boat: "Defiance"
+    rower_8: "Hohlt"
+    rower_7: "Patterson"
+    ...
+    times: ["12:31.05", "12:32.03", "12:29.18"]
+    splits: ["01:36.09", "01:39.66", "01:36.02"]
+    margins: [null, "00:19.94", "00:19.29"]
+  results:
+    summary: "Reilly over Purcea by a total 11.3 secs"

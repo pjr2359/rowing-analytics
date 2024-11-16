@@ -6,12 +6,17 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 from dotenv import load_dotenv
+import logging
+
 load_dotenv()
 
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)  # Change to DEBUG for detailed logs
+logger = logging.getLogger(__name__)
 
 password = os.getenv('PASSWORD')
 # Database connection setup
-engine = create_engine('postgresql://postgres:'+password+'@localhost/rowing-analytics')
+engine = create_engine('postgresql://postgres:'+'Conan_Stephens27'+'@localhost/rowing-analytics')
 
 # GMS times for boat classes and rankings (in seconds)
 GMS_TIMES = {
@@ -25,11 +30,15 @@ GMS_TIMES = {
     '1v 4+': 6 * 60 + 8,   # 6:08 -> 368 seconds
     '2v 4+': 6 * 60 + 14,  # 6:14 -> 374 seconds
     '3v 4+': 6 * 60 + 20,  # 6:20 -> 380 seconds
+    '4v 4+': 6 * 60 + 26,  # 6:26 -> 386 seconds
+    '5v 4+': 6 * 60 + 32,  # 6:32 -> 392 seconds
 
     # 4- Boats
     '1v 4-': 6 * 60 + 3,   # 6:03 -> 363 seconds
     '2v 4-': 6 * 60 + 9,   # 6:09 -> 369 seconds
     '3v 4-': 6 * 60 + 15,  # 6:15 -> 375 seconds
+    '4v 4-': 6 * 60 + 21,  # 6:21 -> 381 seconds
+    '5v 4-': 6 * 60 + 27,  # 6:27 -> 387 seconds
 }
 
 def get_rower_performance(engine):
@@ -66,8 +75,15 @@ def get_rower_performance(engine):
     ORDER BY
         r.rower_id, p.piece_number;
     """
-    df = pd.read_sql_query(query, engine)
-    return df
+    try:
+        logger.debug("Executing SQL query to fetch performance data.")
+        df = pd.read_sql_query(query, engine)
+        logger.info(f"Number of performance records fetched: {len(df)}")
+        logger.debug(f"Performance data:\n{df.head()}")
+        return df
+    except Exception as e:
+        logger.error(f"Error fetching performance data: {e}")
+        return pd.DataFrame()
 
 def compute_percentage_off_gms(df):
     """

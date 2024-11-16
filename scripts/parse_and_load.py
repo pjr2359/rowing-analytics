@@ -9,6 +9,7 @@ import logging
 import sys
 import traceback
 from dotenv import load_dotenv
+from sqlalchemy.exc import SQLAlchemyError
 load_dotenv()
 
 # Set up logging
@@ -16,12 +17,20 @@ logging.basicConfig(level=logging.INFO)  # Change to DEBUG for detailed logs
 logger = logging.getLogger(__name__)
 password = os.getenv('PASSWORD')
 # Database connection setup
-engine = create_engine('postgresql+psycopg2://postgres:'+password+'@localhost:5432/rowing-analytics')
+engine = create_engine('postgresql+psycopg2://postgres:'+"Conan_Stephens27"+'@localhost:5432/rowing-analytics')
 
 def parse_csv(file_path):
-    # Read the CSV without headers to keep raw data
-    data = pd.read_csv(file_path, header=None)
-    return data
+    try:
+        # Read CSV with different encoding and handle empty cells
+        df = pd.read_csv(file_path, na_filter=False)
+        # Convert empty strings to NaN
+        df = df.replace(r'^\s*$', pd.NA, regex=True)
+        logger.info(f"CSV headers: {df.columns.tolist()}")
+        logger.info(f"First few rows:\n{df.head()}")
+        return df
+    except Exception as e:
+        logger.error(f"Error reading CSV file: {str(e)}")
+        return None
 
 def get_or_create_rower_id(conn, rower_table, rower_name):
     if not rower_name or pd.isnull(rower_name):
@@ -36,10 +45,36 @@ def get_or_create_rower_id(conn, rower_table, rower_name):
         res = conn.execute(ins)
         return res.inserted_primary_key[0]
 
+def get_or_create_boat_id(conn, boat_table, boat_name, boat_class, boat_rank):
+    """Get existing boat ID or create new boat entry."""
+    if not boat_name or pd.isnull(boat_name):
+        return None
+        
+    boat_name = boat_name.strip()
+    # Look for existing boat
+    sel = select(boat_table.c.boat_id).where(
+        (boat_table.c.name == boat_name) &
+        (boat_table.c.boat_class == boat_class) &
+        (boat_table.c.boat_rank == boat_rank)
+    )
+    result = conn.execute(sel).fetchone()
+    
+    if result:
+        return result[0]
+    else:
+        # Create new boat
+        ins = boat_table.insert().values(
+            name=boat_name,
+            boat_class=boat_class,
+            boat_rank=boat_rank
+        )
+        res = conn.execute(ins)
+        return res.inserted_primary_key[0]
+
 def convert_time_to_seconds(time_str):
     try:
-        time_str = time_str.strip()
-        if not time_str:
+        time_str = str(time_str).strip()
+        if not time_str or '/' in time_str:  # Skip piece numbers like "3/4"
             return None
         if ':' in time_str:
             parts = time_str.split(':')
@@ -51,8 +86,11 @@ def convert_time_to_seconds(time_str):
                 hours, minutes, seconds = parts
                 return hours * 3600 + minutes * 60 + seconds
         else:
-            return float(time_str)
-    except ValueError:
+            try:
+                return float(time_str)
+            except ValueError:
+                return None
+    except (ValueError, AttributeError):
         logger.warning(f"Could not convert time string to seconds: '{time_str}'")
         return None
 
@@ -72,11 +110,12 @@ def parse_data(file_path, engine):
         return
 
     try:
-        with engine.connect() as conn:
+        with engine.begin() as conn:
             logger.info("Database connection established.")
             metadata = MetaData()
-            # Reflect existing tables
             metadata.reflect(bind=engine)
+            
+            # Get table references
             rower_table = metadata.tables['rower']
             boat_table = metadata.tables['boat']
             event_table = metadata.tables['event']
@@ -89,15 +128,14 @@ def parse_data(file_path, engine):
             event_id = None
             boat_names = []
             boat_ids = {}
-            coxswains = {}
+            piece_id = None  # Initialize piece_id at the top
             piece_number = 0
             seat_race_pieces = []
-            lineups = {}  # To store lineups per piece
-            pieces_switched = False
-            has_coxswain = {}  # To store whether each boat has a coxswain
-            seat_counts = {}   # To store the number of rowers per boat
+            lineups = {}
+            has_coxswain = {}
+            seat_counts = {}
 
-            # Iterate over each row in the data
+            # Process each row
             for index, row in data.iterrows():
                 row_values = row.fillna('').tolist()
                 first_cell = str(row_values[0]).strip()
@@ -106,388 +144,226 @@ def parse_data(file_path, engine):
                 if all(cell == '' for cell in row_values):
                     continue
 
-                # Check for event date or name
-                if index == 0 and first_cell:
-                    # Try parsing date
+                # Process event date/name
+                if index == 0 and first_cell and first_cell not in ['Boat', 'Coxswain']:
                     try:
-                        event_date = datetime.strptime(first_cell, '%m/%d/%Y').date()
-                        event_name = f'Race on {event_date}'
-                    except ValueError:
-                        # Try alternative date format
-                        try:
-                            event_date = datetime.strptime(first_cell, '%m/%d/%y').date()
+                        logger.info(f"Attempting to parse date from: {first_cell}")
+                        # Try parsing as date first
+                        date_formats = ['%m/%d/%Y', '%m/%d/%y', '%m/%d/%Y ', '%m/%d/%y ']
+                        event_date = None
+                        for date_format in date_formats:
+                            try:
+                                event_date = datetime.strptime(first_cell, date_format).date()
+                                logger.info(f"Successfully parsed date: {event_date}")
+                                break
+                            except ValueError:
+                                continue
+                        
+                        if event_date:
                             event_name = f'Race on {event_date}'
-                        except ValueError:
-                            event_name = first_cell
-                            event_date = None
-                    logger.info(f"Event found: {event_name}, Date: {event_date}")
-                    # Insert event into database
-                    ins = event_table.insert().values(event_date=event_date, event_name=event_name)
-                    try:
-                        result_ins = conn.execute(ins)
-                        event_id = result_ins.inserted_primary_key[0]
-                    except Exception as e:
-                        logger.error(f"Failed to insert event: {e}")
-                        continue
+                            # Insert event
+                            ins = event_table.insert().values(
+                                event_date=event_date,
+                                event_name=event_name
+                            )
+                            result = conn.execute(ins)
+                            event_id = result.inserted_primary_key[0]
+                            logger.info(f"Created event: {event_name} with ID {event_id}")
+                        else:
+                            logger.warning(f"Could not parse date from: {first_cell}")
+                    except SQLAlchemyError as e:
+                        logger.error(f"Database error creating event: {e}")
                     continue
 
-                # Check for 'Pieces Switched' and 'Result' in the row
-                if 'Pieces Switched' in row_values or 'Result' in row_values:
-                    # Extract seat-racing information
+                # Process boat header
+                if first_cell == 'Boat':
+                    boat_names = [str(name).strip() for name in row_values[1:] 
+                                if name and 'over' not in name and '/' not in name]
+                    boat_names = [name for name in boat_names if name]
+                    logger.info(f"Found boats: {boat_names}")
+                    
+                    # Create boats in database
+                    for i, boat_name in enumerate(boat_names):
+                        try:
+                            # Default to 8+ initially
+                            boat_id = get_or_create_boat_id(
+                                conn, 
+                                boat_table, 
+                                boat_name, 
+                                boat_class='8+',
+                                boat_rank=i + 1
+                            )
+                            boat_ids[(boat_name, '8+', i + 1)] = boat_id
+                            logger.debug(f"Created/found boat {boat_name} with ID {boat_id}")
+                        except SQLAlchemyError as e:
+                            logger.error(f"Error creating boat {boat_name}: {e}")
+                    
+                    # Initialize tracking dictionaries
+                    lineups = {boat_name: [] for boat_name in boat_names}
+                    has_coxswain = {boat_name: False for boat_name in boat_names}
+                    seat_counts = {boat_name: 0 for boat_name in boat_names}
+                    continue
+
+                # After boat creation, add lineup processing:
+                if first_cell.isdigit() or first_cell == 'Coxswain':
+                    seat_number = 0 if first_cell == 'Coxswain' else int(first_cell)
+                    is_cox = first_cell == 'Coxswain'
+                    
+                    for i, boat_name in enumerate(boat_names):
+                        if i + 1 < len(row_values):
+                            rower_name = str(row_values[i + 1]).strip()
+                            if rower_name and rower_name.lower() != 'nan':
+                                if '/' in rower_name:  # Handle paired rowers
+                                    rower_names = [name.strip() for name in rower_name.split('/')]
+                                else:
+                                    rower_names = [rower_name]
+                                
+                                for name in rower_names:
+                                    rower_id = get_or_create_rower_id(conn, rower_table, name)
+                                    if rower_id:
+                                        if is_cox:
+                                            has_coxswain[boat_name] = True
+                                        else:
+                                            seat_counts[boat_name] = max(seat_counts[boat_name], seat_number)
+                                        
+                                        lineups[boat_name].append({
+                                            'rower_id': rower_id,
+                                            'seat_number': seat_number,
+                                            'is_coxswain': is_cox
+                                        })
+                    continue
+
+                # Add piece processing:
+                if first_cell.startswith('Piece'):
+                    piece_number += 1
+                    piece_description = first_cell
+                    
+                    # Create new piece
+                    ins = piece_table.insert().values(
+                        event_id=event_id,
+                        piece_number=piece_number,
+                        description=piece_description
+                    )
+                    result = conn.execute(ins)
+                    piece_id = result.inserted_primary_key[0]
+                    logger.info(f"Created piece {piece_number}: {piece_description}")
+                    
+                    # Process times for each boat
+                    for i, boat_name in enumerate(boat_names):
+                        if i + 1 < len(row_values):
+                            time_str = row_values[i + 1]
+                            time_in_seconds = convert_time_to_seconds(time_str)
+                            
+                            if time_in_seconds is not None:
+                                boat_rank = i + 1
+                                num_rowers = seat_counts.get(boat_name, 8)  # Default to 8
+                                has_cox = has_coxswain.get(boat_name, False)
+                                boat_class = f'{num_rowers}{"+" if has_cox else "-"}'
+                                
+                                # Get existing boat ID
+                                boat_id = None
+                                for key, value in boat_ids.items():
+                                    if key[0] == boat_name and key[2] == boat_rank:
+                                        boat_id = value
+                                        old_key = key
+                                        break
+                                
+                                if boat_id:
+                                    try:
+                                        # Check if the boat class needs to be updated
+                                        current_class = key[1]
+                                        if current_class != boat_class:
+                                            # Try to update boat class
+                                            update_stmt = (
+                                                update(boat_table)
+                                                .where(boat_table.c.boat_id == boat_id)
+                                                .values(boat_class=boat_class)
+                                            )
+                                            conn.execute(update_stmt)
+                                            
+                                            # Update boat_ids dictionary
+                                            new_key = (boat_name, boat_class, boat_rank)
+                                            boat_ids[new_key] = boat_ids.pop(old_key)
+                                        
+                                        # Insert result
+                                        ins = result_table.insert().values(
+                                            piece_id=piece_id,
+                                            boat_id=boat_id,
+                                            time=time_in_seconds
+                                        )
+                                        conn.execute(ins)
+                                        logger.info(f"Recorded time {time_str} for boat {boat_name}")
+                                    except SQLAlchemyError as e:
+                                        logger.error(f"Database error updating boat {boat_name}: {e}")
+                                        continue
+
+                # Add special handling for "Pieces Switched" and seat race results:
+                if 'Pieces Switched' in first_cell:
+                    # Extract piece numbers
+                    match = re.search(r'(\d+)/(\d+)', str(row_values[1]))
+                    if match:
+                        piece1, piece2 = int(match.group(1)), int(match.group(2))
+                        seat_race_pieces.extend([piece1, piece2])
+                        logger.info(f"Recorded switched pieces: {piece1} and {piece2}")
+                    continue
+
+                if 'Result' in first_cell or any('over' in str(cell) for cell in row_values):
                     for cell in row_values:
                         cell = str(cell).strip()
-                        if 'Pieces Switched' in cell:
-                            pieces_switched = True
-                            continue
-                        if 'over' in cell:
-                            # Example: 'Reilly over Purcea by a total 11.3 secs'
-                            match = re.match(r'(\w+)\s+over\s+(\w+)\s+by\s+a\s+total\s+([0-9.]+)\s+secs', cell)
+                        if 'over' in cell.lower():
+                            # Example: "Reilly over Purcea by a total 11.3 secs"
+                            match = re.search(r'(\w+)\s+over\s+(\w+)\s+by\s+(?:a\s+total\s+)?([0-9.]+)\s*secs?', cell)
                             if match:
-                                name1 = match.group(1)
-                                name2 = match.group(2)
-                                time_diff = float(match.group(3))
-                                logger.info(f"Seat race result: {name1} over {name2} by {time_diff} seconds")
-
-                                # Get or create rower IDs
-                                rower_id_1 = get_or_create_rower_id(conn, rower_table, name1)
-                                rower_id_2 = get_or_create_rower_id(conn, rower_table, name2)
-
-                                # Determine winner
-                                winner_id = rower_id_1
-
-                                # Insert seat race data
-                                if seat_race_table:
+                                winner, loser, margin = match.group(1), match.group(2), float(match.group(3))
+                                
+                                # Get rower IDs
+                                winner_id = get_or_create_rower_id(conn, rower_table, winner)
+                                loser_id = get_or_create_rower_id(conn, rower_table, loser)
+                                
+                                if winner_id and loser_id and seat_race_pieces:
+                                    # Insert seat race result
                                     ins = seat_race_table.insert().values(
                                         event_id=event_id,
                                         piece_numbers=seat_race_pieces,
-                                        rower_id_1=rower_id_1,
-                                        rower_id_2=rower_id_2,
-                                        time_difference=time_diff,
+                                        rower_id_1=winner_id,
+                                        rower_id_2=loser_id,
+                                        time_difference=margin,
                                         winner_id=winner_id,
                                         notes=cell
                                     )
                                     conn.execute(ins)
-                                    logger.info(f"Inserted seat race result between {name1} and {name2}")
-                                else:
-                                    logger.warning("Seat race table not found in database.")
-                            else:
-                                logger.warning(f"Could not parse seat race result: {cell}")
+                                    logger.info(f"Recorded seat race result: {winner} over {loser} by {margin} seconds")
                     continue
-
-                # Check for 'Boat' header
-                if first_cell == 'Boat':
-                    # Extract boat names starting from the second cell
-                    boat_names = [str(name).strip() for name in row_values[1:] if name]
-                    # Assign boat rankings based on position (left to right)
-                    boat_ranks = list(range(1, len(boat_names) + 1))
-                    # Initialize coxswain presence and seat counts
-                    has_coxswain = {boat_name: False for boat_name in boat_names}
-                    seat_counts = {boat_name: 0 for boat_name in boat_names}
-                    # Reset lineups for the new set of boats
-                    lineups = {boat_name: [] for boat_name in boat_names}
-                    continue
-
-                # Check for 'Coxswain' row
-                if first_cell == 'Coxswain':
-                    for i, boat_name in enumerate(boat_names):
-                        coxswain_name = row_values[i+1] if i+1 < len(row_values) else None
-                        if coxswain_name:
-                            coxswain_name = coxswain_name.strip()
-                            has_coxswain[boat_name] = True  # Mark that this boat has a coxswain
-                            # Get or create coxswain
-                            cox_id = get_or_create_rower_id(conn, rower_table, coxswain_name)
-                            lineup_entry = {
-                                'piece_id': None,  # Will be updated later
-                                'boat_id': None,   # Will be assigned later
-                                'rower_id': cox_id,
-                                'seat_number': 0,  # Seat 0 for coxswain
-                                'is_coxswain': True
-                            }
-                            # Store in lineups dict
-                            lineups.setdefault(boat_name, []).append(lineup_entry)
-                    continue
-
-                # Check for seat numbers (assuming they are digits)
-                if first_cell.isdigit():
-                    seat_number = int(first_cell)
-                    for i, boat_name in enumerate(boat_names):
-                        rower_name = row_values[i+1] if i+1 < len(row_values) else None
-                        if rower_name:
-                            rower_name = rower_name.strip()
-                            if rower_name:
-                                seat_counts[boat_name] += 1
-                                # Check for combined names
-                                if '/' in rower_name:
-                                    combined_names = rower_name.split('/')
-                                    for name in combined_names:
-                                        name = name.strip()
-                                        if name:
-                                            rower_id = get_or_create_rower_id(conn, rower_table, name)
-                                            lineup_entry = {
-                                                'piece_id': None,  # Will be updated later
-                                                'boat_id': None,   # Will be assigned later
-                                                'rower_id': rower_id,
-                                                'seat_number': seat_number,
-                                                'is_coxswain': False
-                                            }
-                                            # Store in lineups dict
-                                            lineups.setdefault(boat_name, []).append(lineup_entry)
-                                else:
-                                    rower_id = get_or_create_rower_id(conn, rower_table, rower_name)
-                                    lineup_entry = {
-                                        'piece_id': None,  # Will be updated later
-                                        'boat_id': None,   # Will be assigned later
-                                        'rower_id': rower_id,
-                                        'seat_number': seat_number,
-                                        'is_coxswain': False
-                                    }
-                                    # Store in lineups dict
-                                    lineups.setdefault(boat_name, []).append(lineup_entry)
-                            else:
-                                logger.warning(f"No rower name found for seat {seat_number} in boat '{boat_name}'.")
-                        else:
-                            logger.warning(f"No rower name found for seat {seat_number} in boat '{boat_name}'.")
-                    continue
-
-                # Check for 'Piece' entries
-                if first_cell.startswith('Piece'):
-                    piece_number += 1
-                    piece_description = first_cell
-                    # Insert piece into database
-                    ins = piece_table.insert().values(
-                        event_id=event_id,
-                        piece_number=piece_number,
-                        distance=None,
-                        description=piece_description
-                    )
-                    result_ins = conn.execute(ins)
-                    piece_id = result_ins.inserted_primary_key[0]
-
-                    # Now, process boats and lineups
-                    for idx, boat_name in enumerate(boat_names):
-                        # Determine boat class
-                        num_rowers = seat_counts.get(boat_name, 0)
-                        cox_present = has_coxswain.get(boat_name, False)
-                        if num_rowers == 0:
-                            logger.warning(f"No rowers found for boat '{boat_name}'. Skipping this boat.")
-                            continue
-                        if cox_present:
-                            boat_class = f'{num_rowers}+'
-                        else:
-                            boat_class = f'{num_rowers}-'
-
-                        # Assign boat rank based on position
-                        boat_rank = idx + 1  # 1v, 2v, etc.
-
-                        # Insert or get boat
-                        boat_identifier = (boat_name, boat_class, boat_rank)
-                        if boat_identifier not in boat_ids:
-                            # Check if boat already exists
-                            sel = select(boat_table.c.boat_id).where(
-                                (boat_table.c.name == boat_name) &
-                                (boat_table.c.boat_class == boat_class) &
-                                (boat_table.c.boat_rank == boat_rank)
-                            )
-                            result_sel = conn.execute(sel).fetchone()
-                            if result_sel:
-                                boat_id = result_sel[0]
-                            else:
-                                ins = boat_table.insert().values(
-                                    name=boat_name,
-                                    boat_class=boat_class,
-                                    boat_rank=boat_rank
-                                )
-                                res = conn.execute(ins)
-                                boat_id = res.inserted_primary_key[0]
-                            boat_ids[boat_identifier] = boat_id
-                        else:
-                            boat_id = boat_ids[boat_identifier]
-
-                        # Update lineup entries with piece_id and boat_id
-                        if boat_name in lineups:
-                            for lineup_entry in lineups[boat_name]:
-                                lineup_entry['piece_id'] = piece_id
-                                lineup_entry['boat_id'] = boat_id
-                                # Insert lineup into database
-                                ins = lineup_table.insert().values(**lineup_entry)
-                                conn.execute(ins)
-                        else:
-                            logger.warning(f"No lineup entries found for boat '{boat_name}'.")
-
-                        # Reset seat_counts and has_coxswain for the next piece
-                        seat_counts[boat_name] = 0
-                        has_coxswain[boat_name] = False
-
-                    # Clear lineups for the next piece
-                    lineups = {boat_name: [] for boat_name in boat_names}
-
-                    # Now parse the times for each boat
-                    for i, boat_name in enumerate(boat_names):
-                        time_str = row_values[i+1] if i+1 < len(row_values) else ''
-                        time_in_seconds = convert_time_to_seconds(time_str)
-                        if time_in_seconds is not None:
-                            # Retrieve the correct boat_class and boat_rank
-                            boat_rank = i + 1
-                            num_rowers = seat_counts.get(boat_name, 0)
-                            cox_present = has_coxswain.get(boat_name, False)
-                            if num_rowers == 0:
-                                # Estimate num_rowers from existing boat_ids
-                                for key in boat_ids:
-                                    if key[0] == boat_name:
-                                        boat_class = key[1]
-                                        break
-                                else:
-                                    logger.warning(f"Cannot determine boat class for boat '{boat_name}'.")
-                                    continue
-                            else:
-                                if cox_present:
-                                    boat_class = f'{num_rowers}+'
-                                else:
-                                    boat_class = f'{num_rowers}-'
-                            boat_identifier = (boat_name, boat_class, boat_rank)
-                            boat_id = boat_ids.get(boat_identifier)
-                            if boat_id is None:
-                                logger.warning(f"Boat ID not found for boat '{boat_name}'. Skipping result entry.")
-                                continue
-                            # Insert result into database
-                            ins = result_table.insert().values(
-                                piece_id=piece_id,
-                                boat_id=boat_id,
-                                time=time_in_seconds,
-                                split=None,
-                                margin=None
-                            )
-                            conn.execute(ins)
-                    continue
-
-                # Check for 'Split' entries
-                if first_cell == 'Split':
-                    # Update splits in the result table
-                    for i, boat_name in enumerate(boat_names):
-                        split_str = row_values[i+1] if i+1 < len(row_values) else ''
-                        split_in_seconds = convert_time_to_seconds(split_str)
-                        if split_in_seconds is not None:
-                            boat_rank = i + 1
-                            boat_identifier = None
-                            # Find the boat_identifier
-                            for key in boat_ids:
-                                if key[0] == boat_name and key[2] == boat_rank:
-                                    boat_identifier = key
-                                    break
-                            if boat_identifier is None:
-                                logger.warning(f"Boat identifier not found for boat '{boat_name}'.")
-                                continue
-                            boat_id = boat_ids[boat_identifier]
-                            # Update the split for the last piece and boat
-                            update_stmt = (
-                                update(result_table)
-                                .where(result_table.c.piece_id == piece_id)
-                                .where(result_table.c.boat_id == boat_id)
-                                .values(split=split_in_seconds)
-                            )
-                            conn.execute(update_stmt)
-                    continue
-
-                # Check for 'Margin' entries
-                if first_cell == 'Margin':
-                    # Update margins in the result table
-                    for i, boat_name in enumerate(boat_names):
-                        margin_str = row_values[i+1] if i+1 < len(row_values) else ''
-                        margin_in_seconds = convert_time_to_seconds(margin_str)
-                        if margin_in_seconds is not None:
-                            boat_rank = i + 1
-                            boat_identifier = None
-                            for key in boat_ids:
-                                if key[0] == boat_name and key[2] == boat_rank:
-                                    boat_identifier = key
-                                    break
-                            if boat_identifier is None:
-                                logger.warning(f"Boat identifier not found for boat '{boat_name}'.")
-                                continue
-                            boat_id = boat_ids[boat_identifier]
-                            # Update the margin for the last piece and boat
-                            update_stmt = (
-                                update(result_table)
-                                .where(result_table.c.piece_id == piece_id)
-                                .where(result_table.c.boat_id == boat_id)
-                                .values(margin=margin_in_seconds)
-                            )
-                            conn.execute(update_stmt)
-                    continue
-
-                # Handle 'Meters' entries (distance)
-                if first_cell == 'Meters':
-                    # Update distance in the piece table
-                    meters = None
-                    for i in range(1, len(row_values)):
-                        meters_str = row_values[i]
-                        if meters_str.isdigit():
-                            meters = int(meters_str)
-                            break  # Assuming distance is the same for all boats
-                    if meters:
-                        update_stmt = (
-                            update(piece_table)
-                            .where(piece_table.c.piece_id == piece_id)
-                            .values(distance=meters)
-                        )
-                        conn.execute(update_stmt)
-                    continue
-
-                # Handle 'Overall' entries
-                if first_cell == 'Overall':
-                    # Update overall times in the result table
-                    for i, boat_name in enumerate(boat_names):
-                        overall_time_str = row_values[i+1] if i+1 < len(row_values) else ''
-                        overall_time_in_seconds = convert_time_to_seconds(overall_time_str)
-                        if overall_time_in_seconds is not None:
-                            boat_rank = i + 1
-                            boat_identifier = None
-                            for key in boat_ids:
-                                if key[0] == boat_name and key[2] == boat_rank:
-                                    boat_identifier = key
-                                    break
-                            if boat_identifier is None:
-                                logger.warning(f"Boat identifier not found for boat '{boat_name}'.")
-                                continue
-                            boat_id = boat_ids[boat_identifier]
-                            # Update or insert overall result as a new piece
-                            overall_piece_number = piece_number + 1
-                            ins = piece_table.insert().values(
-                                event_id=event_id,
-                                piece_number=overall_piece_number,
-                                distance=None,
-                                description='Overall Time'
-                            )
-                            result_ins = conn.execute(ins)
-                            overall_piece_id = result_ins.inserted_primary_key[0]
-                            ins = result_table.insert().values(
-                                piece_id=overall_piece_id,
-                                boat_id=boat_id,
-                                time=overall_time_in_seconds,
-                                split=None,
-                                margin=None
-                            )
-                            conn.execute(ins)
-                    continue
-
-                # Handle any other cases as needed
-
-            logger.info("Finished processing data.")
 
     except Exception as e:
-        logger.error(f"An error occurred while parsing the CSV file: {e}")
+        logger.error(f"An error occurred while parsing the file: {e}")
         traceback.print_exc()
 
 def main():
     logger.info("Starting the parsing process.")
     # Directory containing water data CSV files
-    water_data_dir = 'C:/Users/PJRei/rowing-analytics/data'
+    water_data_dir = '/home/pjreilly44/rowing-analytics/data'
+    
+    # Check if the directory exists
+    if not os.path.exists(water_data_dir):
+        logger.error(f"The directory {water_data_dir} does not exist.")
+        return
+    
+    # List all files in directory
+    files = os.listdir(water_data_dir)
+    logger.info(f"Found files in directory: {files}")
     
     # Iterate over all CSV files in the directory
-    for filename in os.listdir(water_data_dir):
+    csv_count = 0
+    for filename in files:
         if filename.endswith('.csv'):
+            csv_count += 1
             water_filepath = os.path.join(water_data_dir, filename)
+            logger.info(f"Processing file {csv_count}: {filename}")
             parse_data(water_filepath, engine)
+    
+    if csv_count == 0:
+        logger.warning("No CSV files found in the data directory!")
 
 if __name__ == "__main__":
     main()
