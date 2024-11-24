@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 password = os.getenv('PASSWORD')
 # Database connection setup
-engine = create_engine('postgresql://postgres:'+'Conan_Stephens27'+'@localhost/rowing-analytics')
+engine = create_engine('postgresql://postgres:'+password+'@localhost/rowing-analytics')
 
 # GMS times for boat classes and rankings (in seconds)
 GMS_TIMES = {

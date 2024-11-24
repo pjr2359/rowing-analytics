@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)  # Change to DEBUG for detailed logs
 logger = logging.getLogger(__name__)
 password = os.getenv('PASSWORD')
 # Database connection setup
-engine = create_engine('postgresql+psycopg2://postgres:'+"Conan_Stephens27"+'@localhost:5432/rowing-analytics')
+engine = create_engine('postgresql+psycopg2://postgres:'+password+'@localhost:5432/rowing-analytics')
 
 def parse_csv(file_path):
     try:
@@ -123,6 +123,41 @@ def parse_data(file_path, engine):
             lineup_table = metadata.tables['lineup']
             result_table = metadata.tables['result']
             seat_race_table = metadata.tables.get('seat_race')
+
+            # Create event from filename or first column
+            try:
+                # Get the first column name (which contains the date)
+                first_column = data.columns[0]
+                logger.info(f"Attempting to parse date from column: {first_column}")
+                
+                # Try parsing the date
+                date_formats = ['%m/%d/%Y', '%m/%d/%y']
+                event_date = None
+                
+                for date_format in date_formats:
+                    try:
+                        date_str = first_column.strip()
+                        event_date = datetime.strptime(date_str, date_format).date()
+                        logger.info(f"Successfully parsed date: {event_date}")
+                        break
+                    except ValueError:
+                        continue
+                
+                if event_date:
+                    # Create the event
+                    ins = event_table.insert().values(
+                        event_date=event_date,
+                        event_name=f'Practice on {event_date}'
+                    )
+                    result = conn.execute(ins)
+                    event_id = result.inserted_primary_key[0]
+                    logger.info(f"Created event with ID {event_id} for date {event_date}")
+                else:
+                    logger.error(f"Could not parse date from column: {first_column}")
+                    return
+            except Exception as e:
+                logger.error(f"Error creating event: {e}")
+                return
 
             # Initialize variables
             event_id = None
