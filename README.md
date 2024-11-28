@@ -1,8 +1,8 @@
 Rowing Analytics Project
 The Rowing Analytics Project is designed to parse rowing performance data from CSV files, load it into a PostgreSQL database, and analyze the data to rank rowers based on their performance relative to Gold Medal Standard (GMS) times.
 
-Overview
-This project helps coaches, athletes, and analysts by:
+
+This project helps coaches and athletes by:
 
 Parsing CSV files containing race results and lineup information.
 Loading parsed data into a structured PostgreSQL database.
