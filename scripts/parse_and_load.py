@@ -12,18 +12,18 @@ from dotenv import load_dotenv
 from sqlalchemy.exc import SQLAlchemyError
 load_dotenv()
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)  # Change to DEBUG for detailed logs
+logging.basicConfig(level=logging.INFO)  
 logger = logging.getLogger(__name__)
 password = os.getenv('PASSWORD')
-# Database connection setup
+# db connection setup
 engine = create_engine('postgresql+psycopg2://postgres:'+password+'@localhost:5432/rowing-analytics')
 
 def parse_csv(file_path):
     try:
-        # Read CSV with different encoding and handle empty cells
+        
         df = pd.read_csv(file_path, na_filter=False)
-        # Convert empty strings to NaN
+        
+        # replace empty strings with None
         df = df.replace(r'^\s*$', pd.NA, regex=True)
         logger.info(f"CSV headers: {df.columns.tolist()}")
         logger.info(f"First few rows:\n{df.head()}")
@@ -51,7 +51,6 @@ def get_or_create_boat_id(conn, boat_table, boat_name, boat_class, boat_rank):
         return None
         
     boat_name = boat_name.strip()
-    # Look for existing boat
     sel = select(boat_table.c.boat_id).where(
         (boat_table.c.name == boat_name) &
         (boat_table.c.boat_class == boat_class) &
@@ -62,7 +61,6 @@ def get_or_create_boat_id(conn, boat_table, boat_name, boat_class, boat_rank):
     if result:
         return result[0]
     else:
-        # Create new boat
         ins = boat_table.insert().values(
             name=boat_name,
             boat_class=boat_class,
@@ -74,7 +72,7 @@ def get_or_create_boat_id(conn, boat_table, boat_name, boat_class, boat_rank):
 def convert_time_to_seconds(time_str):
     try:
         time_str = str(time_str).strip()
-        if not time_str or '/' in time_str:  # Skip piece numbers like "3/4"
+        if not time_str or '/' in time_str:  
             return None
         if ':' in time_str:
             parts = time_str.split(':')
@@ -115,7 +113,7 @@ def parse_data(file_path, engine):
             metadata = MetaData()
             metadata.reflect(bind=engine)
             
-            # Get table references
+
             rower_table = metadata.tables['rower']
             boat_table = metadata.tables['boat']
             event_table = metadata.tables['event']
@@ -124,13 +122,11 @@ def parse_data(file_path, engine):
             result_table = metadata.tables['result']
             seat_race_table = metadata.tables.get('seat_race')
 
-            # Create event from filename or first column
+            
             try:
-                # Get the first column name (which contains the date)
                 first_column = data.columns[0]
                 logger.info(f"Attempting to parse date from column: {first_column}")
                 
-                # Try parsing the date
                 date_formats = ['%m/%d/%Y', '%m/%d/%y']
                 event_date = None
                 
@@ -144,7 +140,7 @@ def parse_data(file_path, engine):
                         continue
                 
                 if event_date:
-                    # Create the event
+                    
                     ins = event_table.insert().values(
                         event_date=event_date,
                         event_name=f'Practice on {event_date}'
@@ -159,31 +155,27 @@ def parse_data(file_path, engine):
                 logger.error(f"Error creating event: {e}")
                 return
 
-            # Initialize variables
             event_id = None
             boat_names = []
             boat_ids = {}
-            piece_id = None  # Initialize piece_id at the top
+            piece_id = None  
             piece_number = 0
             seat_race_pieces = []
             lineups = {}
             has_coxswain = {}
             seat_counts = {}
 
-            # Process each row
             for index, row in data.iterrows():
                 row_values = row.fillna('').tolist()
                 first_cell = str(row_values[0]).strip()
 
-                # Skip empty rows
+              
                 if all(cell == '' for cell in row_values):
                     continue
 
-                # Process event date/name
                 if index == 0 and first_cell and first_cell not in ['Boat', 'Coxswain']:
                     try:
                         logger.info(f"Attempting to parse date from: {first_cell}")
-                        # Try parsing as date first
                         date_formats = ['%m/%d/%Y', '%m/%d/%y', '%m/%d/%Y ', '%m/%d/%y ']
                         event_date = None
                         for date_format in date_formats:
@@ -196,7 +188,7 @@ def parse_data(file_path, engine):
                         
                         if event_date:
                             event_name = f'Race on {event_date}'
-                            # Insert event
+                           
                             ins = event_table.insert().values(
                                 event_date=event_date,
                                 event_name=event_name
@@ -210,17 +202,15 @@ def parse_data(file_path, engine):
                         logger.error(f"Database error creating event: {e}")
                     continue
 
-                # Process boat header
                 if first_cell == 'Boat':
                     boat_names = [str(name).strip() for name in row_values[1:] 
                                 if name and 'over' not in name and '/' not in name]
                     boat_names = [name for name in boat_names if name]
                     logger.info(f"Found boats: {boat_names}")
                     
-                    # Create boats in database
                     for i, boat_name in enumerate(boat_names):
                         try:
-                            # Default to 8+ initially
+                           
                             boat_id = get_or_create_boat_id(
                                 conn, 
                                 boat_table, 
@@ -233,13 +223,12 @@ def parse_data(file_path, engine):
                         except SQLAlchemyError as e:
                             logger.error(f"Error creating boat {boat_name}: {e}")
                     
-                    # Initialize tracking dictionaries
                     lineups = {boat_name: [] for boat_name in boat_names}
                     has_coxswain = {boat_name: False for boat_name in boat_names}
                     seat_counts = {boat_name: 0 for boat_name in boat_names}
                     continue
 
-                # After boat creation, add lineup processing:
+                # lineup processing
                 if first_cell.isdigit() or first_cell == 'Coxswain':
                     seat_number = 0 if first_cell == 'Coxswain' else int(first_cell)
                     is_cox = first_cell == 'Coxswain'
