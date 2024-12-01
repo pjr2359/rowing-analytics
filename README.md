@@ -1,8 +1,8 @@
 Rowing Analytics Project
 The Rowing Analytics Project is designed to parse rowing performance data from CSV files, load it into a PostgreSQL database, and analyze the data to rank rowers based on their performance relative to Gold Medal Standard (GMS) times.
 
-Overview
-This project helps coaches, athletes, and analysts by:
+
+This project helps coaches and athletes by:
 
 Parsing CSV files containing race results and lineup information.
 Loading parsed data into a structured PostgreSQL database.
@@ -15,20 +15,17 @@ Git (optional, for cloning the repository)
 Setup Instructions
 Clone the Repository
 
-bash
-Copy code
+
 git clone https://github.com/yourusername/rowing-analytics.git
 cd rowing-analytics
 Set Up a Python Virtual Environment
 
-bash
-Copy code
+
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 Install Dependencies
 
-bash
-Copy code
+
 pip install -r requirements.txt
 Install PostgreSQL
 
@@ -38,22 +35,19 @@ Configure the Database
 
 Create Database
 
-bash
-Copy code
+
 psql -U postgres
 CREATE DATABASE "rowing-analytics";
 \q
 Set Up Database Schema
 
-bash
-Copy code
+
 psql -U postgres -d "rowing-analytics" -f scripts/database_setup.sql
 Set Up Environment Variables
 
 Create a .env file in the scripts/ directory:
 
-bash
-Copy code
+
 cd scripts
 touch .env
 Add your PostgreSQL password to .env:
@@ -68,15 +62,13 @@ Running the Project
 1. Parse and Load Data
 Navigate to the scripts/ directory and run:
 
-bash
-Copy code
+
 python parse_and_load.py
 Parses CSV files in data/ and loads data into the database.
 2. Analyze the Data
 From the scripts/ directory, run:
 
-bash
-Copy code
+
 python rowing_analysis.py
 Retrieves data from the database.
 Computes average percentage off GMS for each rower.
@@ -106,8 +98,7 @@ matplotlib
 seaborn
 Install all dependencies using:
 
-bash
-Copy code
+
 pip install -r requirements.txt
 Troubleshooting
 No Data Loaded: Ensure CSV files are correctly formatted and placed in data/.
