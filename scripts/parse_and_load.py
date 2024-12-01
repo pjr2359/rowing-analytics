@@ -21,7 +21,7 @@ engine = create_engine('postgresql+psycopg2://postgres:'+password+'@localhost:54
 
 def parse_csv(file_path):
     try:
-        # Read CSV with different encoding and handle empty cells
+        # Read CSV 
         df = pd.read_csv(file_path, na_filter=False)
         # Convert empty strings to NaN
         df = df.replace(r'^\s*$', pd.NA, regex=True)
@@ -93,6 +93,72 @@ def convert_time_to_seconds(time_str):
     except (ValueError, AttributeError):
         logger.warning(f"Could not convert time string to seconds: '{time_str}'")
         return None
+    
+def determine_boat_configuration(row_values, boat_names,  boat_configurations):
+                            """
+                            Parse a row of lineup data to determine boat configurations.
+                            Returns True if the row contains lineup data, False otherwise.
+                            """
+                            print(f"Processing row: {row_values}")
+                            print(f"Boat names: {boat_names}")
+                            print(f"Current boat configurations: {boat_configurations}")
+                            
+                            first_cell = str(row_values[0]).strip()
+                            second_cell = str(row_values[1]).strip()
+                            print(f"First cell: '{first_cell}'")
+                            print(f"Second cell: '{second_cell}'")
+                            
+                            # Check if this is a lineup row (either seat number or "Coxswain")
+                            if not (first_cell.isdigit() or first_cell == 'Boat'):
+                                print("Not a lineup row - returning False")
+                                return False
+                                
+                            is_cox = second_cell == 'Coxswain'
+                            seat_number = 0 if is_cox else int(first_cell)
+                            print(f"Is cox: {is_cox}, Seat number: {seat_number}")
+                            
+                            # Process each boat's data in this row
+                            for i, boat_name in enumerate(boat_names):
+                                print(f"\nProcessing boat: {boat_name}")
+                                if i + 1 < len(row_values):
+                                    rower_name = str(row_values[i + 1]).strip()
+                                    print(f"Rower name: '{rower_name}'")
+                                    if rower_name and rower_name.lower() != 'nan':
+                                        if is_cox:
+                                            boat_configurations[boat_name]['has_cox'] = True
+                                            print(f"Added cox to {boat_name}")
+                                        else:
+                                            boat_configurations[boat_name]['seat_count'] = max(
+                                                boat_configurations[boat_name]['seat_count'],
+                                                seat_number
+                                            )
+                                            print(f"Updated seat count for {boat_name} to {boat_configurations[boat_name]['seat_count']}")
+                            print(f"\nFinal boat configurations: {boat_configurations}")
+                            return True
+
+def get_boat_class(config):
+    """Convert seat count and cox presence to boat class string"""
+    if config['seat_count'] == 0:  # No rowers
+        return None
+    return f"{config['seat_count']}{'+' if config['has_cox'] else '-'}"
+
+def get_boat_columns(data, boat_names):
+    """
+    Extract columns for each boat name from the DataFrame.
+    
+    :param data: Pandas DataFrame containing the CSV data.
+    :param boat_names: List of boat names to extract columns for.
+    :return: Dictionary with boat names as keys and lists of column values as values.
+    """
+    boat_columns = {boat_name: [] for boat_name in boat_names}
+    
+    for _, row in data.iterrows():
+        for i, boat_name in enumerate(boat_names):
+            if i + 1 < len(row):
+                value = row[i + 1]
+                boat_columns[boat_name].append(value)
+    
+    return boat_columns
 
 def parse_data(file_path, engine):
     logger.info(f"Parsing file: {file_path}")
@@ -169,6 +235,8 @@ def parse_data(file_path, engine):
             lineups = {}
             has_coxswain = {}
             seat_counts = {}
+            boat_configurations = {}
+
 
             # Process each row
             for index, row in data.iterrows():
@@ -210,26 +278,79 @@ def parse_data(file_path, engine):
                         logger.error(f"Database error creating event: {e}")
                     continue
 
+                
+                
+
                 # Process boat header
                 if first_cell == 'Boat':
                     boat_names = [str(name).strip() for name in row_values[1:] 
                                 if name and 'over' not in name and '/' not in name]
                     boat_names = [name for name in boat_names if name]
-                    logger.info(f"Found boats: {boat_names}")
+                    logger.debug(f"Processing row: {row_values}")
+                    logger.debug(f"Boat names: {boat_names}")
+
+                    boat_configurations = {boat_name: {'seat_count': 0, 'has_cox': False} for boat_name in boat_names  }
+                    logger.debug(f"Current boat configurations: {boat_configurations}")
+                    logger.debug(f"First cell: {first_cell}")
+
+                    boat_columns = get_boat_columns(data, boat_names)
+                    logger.debug(f"Boat columns: {boat_columns}")
+
+                    determine_boat_configuration(boat_columns, boat_names, boat_configurations)
                     
+                    # Log boat configurations after processing
+                    for boat_name, config in boat_configurations.items():
+                        logger.debug(f"Boat configuration for {boat_name}:")
+                        logger.debug(f"  Seat count: {config['seat_count']}")
+                        logger.debug(f"  Has cox: {config['has_cox']}")
+                        boat_class = get_boat_class(config)
+                        logger.debug(f"  Resulting class: {boat_class}")
+                        if boat_class is None:
+                            logger.error(f"get_boat_class returned None for config: {config}")
+
                     # Create boats in database
-                    for i, boat_name in enumerate(boat_names):
+                    # Group boats by class
+                    boats_by_class = {}
+                    for boat_name in boat_names:
+                        boat_class = get_boat_class(boat_configurations[boat_name])
+                        if boat_class is None:
+                            logger.error(f"Skipping boat {boat_name} - invalid configuration")
+                            continue
+                        if boat_class not in boats_by_class:
+                            boats_by_class[boat_class] = []
+                        boats_by_class[boat_class].append(boat_name)
+                    
+                    # Calculate rank for each boat based on position within its class
+                    boat_ranks = {}
+                    for boat_class, class_boats in boats_by_class.items():
+                        logger.debug(f"Processing boat class: {boat_class}")
                         try:
-                            # Default to 8+ initially
+                            num_seats = int(boat_class[0])  # Extract number from e.g. "8+" or "4+"
+                            for i, boat_name in enumerate(class_boats):
+                                boat_rank = (i // 2) + 1 if num_seats == 4 else (i + 1)
+                                boat_ranks[boat_name] = boat_rank
+                        except (IndexError, ValueError) as e:
+                            logger.error(f"Error parsing boat class '{boat_class}': {e}")
+                            continue
+                    
+                    # Create boats with calculated ranks
+                    for boat_name in boat_names:
+                        try:
+                            boat_class = get_boat_class(boat_configurations[boat_name])
+                            if boat_class is None:
+                                logger.error(f"Skipping boat creation for {boat_name} - invalid boat class")
+                                continue
+                            boat_rank = boat_ranks[boat_name]
+                            
                             boat_id = get_or_create_boat_id(
-                                conn, 
-                                boat_table, 
-                                boat_name, 
-                                boat_class='8+',
-                                boat_rank=i + 1
+                                conn,
+                                boat_table,
+                                boat_name,
+                                boat_class=boat_class,
+                                boat_rank=boat_rank
                             )
-                            boat_ids[(boat_name, '8+', i + 1)] = boat_id
-                            logger.debug(f"Created/found boat {boat_name} with ID {boat_id}")
+                            boat_ids[(boat_name, boat_class, boat_rank)] = boat_id
+                            logger.debug(f"Created/found boat {boat_name} with ID {boat_id} (rank {boat_rank})")
                         except SQLAlchemyError as e:
                             logger.error(f"Error creating boat {boat_name}: {e}")
                     
@@ -243,6 +364,7 @@ def parse_data(file_path, engine):
                 if first_cell.isdigit() or first_cell == 'Coxswain':
                     seat_number = 0 if first_cell == 'Coxswain' else int(first_cell)
                     is_cox = first_cell == 'Coxswain'
+                    
                     
                     for i, boat_name in enumerate(boat_names):
                         if i + 1 < len(row_values):
