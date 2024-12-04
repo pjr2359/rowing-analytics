@@ -12,11 +12,12 @@ from dotenv import load_dotenv
 from sqlalchemy.exc import SQLAlchemyError
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)  
+logging.basicConfig(level=logging.DEBUG)  
 logger = logging.getLogger(__name__)
 password = os.getenv('PASSWORD')
 # db connection setup
 engine = create_engine('postgresql+psycopg2://postgres:'+password+'@localhost:5432/rowing-analytics')
+
 
 def parse_csv(file_path):
     try:
@@ -335,6 +336,8 @@ def parse_data(file_path, engine):
                                             'is_coxswain': is_cox
                                         })
                     continue
+                #this is the domain in which we will discuss the ~lineups~
+                
 
                 # Add piece processing:
                 if first_cell.startswith('Piece'):
@@ -400,7 +403,7 @@ def parse_data(file_path, engine):
                                         logger.error(f"Database error updating boat {boat_name}: {e}")
                                         continue
 
-                # Add special handling for "Pieces Switched" and seat race results:
+                # Seat race handling:
                 if 'Pieces Switched' in first_cell:
                     # Extract piece numbers
                     match = re.search(r'(\d+)/(\d+)', str(row_values[1]))
@@ -444,10 +447,10 @@ def parse_data(file_path, engine):
 
 def main():
     logger.info("Starting the parsing process.")
-    # Directory containing water data CSV files
+  
     water_data_dir = '/home/pjreilly44/rowing-analytics/data'
     
-    # Check if the directory exists
+  
     if not os.path.exists(water_data_dir):
         logger.error(f"The directory {water_data_dir} does not exist.")
         return
