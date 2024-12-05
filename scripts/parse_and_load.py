@@ -141,6 +141,13 @@ def get_boat_class(config):
         return None
     return f"{config['seat_count']}{'+' if config['has_cox'] else '-'}"
 
+def insert_lineups(conn, piece_id, boat_id, rower_id, seat_number : int, is_coxswain : bool):
+    """Inserting the lineups into the db"""
+    
+
+    
+
+
 def get_boat_columns(data, boat_names):
     """
     Extract columns for each boat name from the DataFrame.
@@ -228,6 +235,7 @@ def parse_data(file_path, engine):
             piece_id = None  
             piece_number = 0
             seat_race_pieces = []
+            pieces = []
             lineups = {}
             has_coxswain = {}
             seat_counts = {}
@@ -336,9 +344,7 @@ def parse_data(file_path, engine):
                                             'is_coxswain': is_cox
                                         })
                     continue
-                #this is the domain in which we will discuss the ~lineups~
                 
-
                 # Add piece processing:
                 if first_cell.startswith('Piece'):
                     piece_number += 1
@@ -402,6 +408,10 @@ def parse_data(file_path, engine):
                                     except SQLAlchemyError as e:
                                         logger.error(f"Database error updating boat {boat_name}: {e}")
                                         continue
+                #this is the domain in which we will discuss the ~lineups~
+
+
+                
 
                 # Seat race handling:
                 if 'Pieces Switched' in first_cell:
