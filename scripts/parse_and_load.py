@@ -320,10 +320,13 @@ def parse_data(file_path, engine):
                     seat_number = 0 if first_cell == 'Coxswain' else int(first_cell)
                     is_cox = first_cell == 'Coxswain'
                     
+                    logger.debug(f"Processing lineup row: {row_values}")
+                    logger.debug(f"Seat number: {seat_number}, Is coxswain: {is_cox}")
                     
                     for i, boat_name in enumerate(boat_names):
                         if i + 1 < len(row_values):
                             rower_name = str(row_values[i + 1]).strip()
+                            logger.debug(f"Processing boat: {boat_name}, Rower name: '{rower_name}'")
                             if rower_name and rower_name.lower() != 'nan':
                                 if '/' in rower_name:  # Handle paired rowers
                                     rower_names = [name.strip() for name in rower_name.split('/')]
@@ -332,17 +335,21 @@ def parse_data(file_path, engine):
                                 
                                 for name in rower_names:
                                     rower_id = get_or_create_rower_id(conn, rower_table, name)
+                                    logger.debug(f"Rower ID for '{name}': {rower_id}")
                                     if rower_id:
                                         if is_cox:
                                             has_coxswain[boat_name] = True
+                                            logger.debug(f"Marked {boat_name} as having a coxswain")
                                         else:
                                             seat_counts[boat_name] = max(seat_counts[boat_name], seat_number)
+                                            logger.debug(f"Updated seat count for {boat_name} to {seat_counts[boat_name]}")
                                         
                                         lineups[boat_name].append({
                                             'rower_id': rower_id,
                                             'seat_number': seat_number,
                                             'is_coxswain': is_cox
                                         })
+                                        logger.debug(f"Added lineup entry for {boat_name}: {lineups[boat_name][-1]}")
                     continue
                 
                 # Add piece processing:
