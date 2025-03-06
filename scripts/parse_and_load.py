@@ -1,411 +1,479 @@
 # parse_and_load.py
 import pandas as pd
-from sqlalchemy import create_engine, MetaData, select, update
-from datetime import datetime
-import os
 import re
+import os
 import logging
-import sys
-import traceback
+from datetime import datetime
+from sqlalchemy import create_engine, MetaData, select, update, insert
 from dotenv import load_dotenv
-from sqlalchemy.exc import SQLAlchemyError
+
 load_dotenv()
-
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-password = os.getenv('PASSWORD')
 
-engine = create_engine('postgresql+psycopg2://postgres:'+password+'@localhost:5432/rowing-analytics')
 
-def parse_csv(file_path):
-    try:
-        df = pd.read_csv(file_path, na_filter=False)
-        df = df.replace(r'^\s*$', pd.NA, regex=True)
-        logger.info(f"CSV headers: {df.columns.tolist()}")
-        logger.info(f"First few rows:\n{df.head()}")
-        return df
-    except Exception as e:
-        logger.error(f"Error reading CSV file: {str(e)}")
-        return None
 
-def get_or_create_rower_id(conn, rower_table, rower_name):
-    if not rower_name or pd.isnull(rower_name):
-        return None
-    rower_name = rower_name.strip()
-    sel = select(rower_table.c.rower_id).where(rower_table.c.name == rower_name)
-    result = conn.execute(sel).fetchone()
-    if result:
-        return result[0]
-    else:
-        ins = rower_table.insert().values(name=rower_name)
-        res = conn.execute(ins)
-        return res.inserted_primary_key[0]
-
-def get_or_create_boat_id(conn, boat_table, boat_name, boat_class, boat_rank):
-    if not boat_name or pd.isnull(boat_name):
-        return None
-    boat_name = boat_name.strip()
-    sel = select(boat_table.c.boat_id).where(
-        (boat_table.c.name == boat_name) &
-        (boat_table.c.boat_class == boat_class) &
-        (boat_table.c.boat_rank == boat_rank)
-    )
-    result = conn.execute(sel).fetchone()
-    if result:
-        return result[0]
-    else:
-        ins = boat_table.insert().values(
-            name=boat_name,
-            boat_class=boat_class,
-            boat_rank=boat_rank
-        )
-        res = conn.execute(ins)
-        return res.inserted_primary_key[0]
-
-def convert_time_to_seconds(time_str):
-    try:
-        time_str = str(time_str).strip()
-        if not time_str or '/' in time_str:
-            return None
-        if ':' in time_str:
-            parts = time_str.split(':')
-            parts = [float(p) for p in parts]
-            if len(parts) == 2:
-                minutes, seconds = parts
-                return minutes * 60 + seconds
-            elif len(parts) == 3:
-                hours, minutes, seconds = parts
-                return hours * 3600 + minutes * 60 + seconds
-        else:
-            try:
-                return float(time_str)
-            except ValueError:
+class RowingDataParser:
+    def __init__(self, db_engine):
+        self.engine = db_engine
+        self.metadata = MetaData()
+        self.metadata.reflect(bind=engine)
+        self.tables = {
+            'rower': self.metadata.tables['rower'],
+            'boat': self.metadata.tables['boat'],
+            'event': self.metadata.tables['event'],
+            'piece': self.metadata.tables['piece'],
+            'lineup': self.metadata.tables['lineup'],
+            'result': self.metadata.tables['result'],
+            'seat_race': self.metadata.tables['seat_race']
+        }
+        
+    def parse_csv_file(self, file_path):
+        """Parse a rowing data CSV file with proper structure detection"""
+        logger.info(f"Parsing file: {file_path}")
+        
+        try:
+            # Read the raw CSV without headers first
+            raw_data = pd.read_csv(file_path, header=None)
+            logger.debug(f"Raw data shape: {raw_data.shape}")
+            
+            # Extract date from first cell
+            event_date = self._extract_date(raw_data.iloc[0, 0])
+            logger.info(f"Extracted event date: {event_date}")
+            
+            # Find the row that contains "Boat" as the first cell
+            boat_row_idx = raw_data[raw_data[0] == "Boat"].index
+            if len(boat_row_idx) == 0:
+                logger.error("Could not find 'Boat' row in CSV")
                 return None
-    except (ValueError, AttributeError):
-        logger.warning(f"Could not convert time string to seconds: '{time_str}'")
-        return None
-
-def determine_boat_configuration(row_values, boat_names, boat_configurations):
-    print(f"Processing row: {row_values}")
-    print(f"Boat names: {boat_names}")
-    print(f"Current boat configurations: {boat_configurations}")
-    first_cell = str(row_values[0]).strip()
-    second_cell = str(row_values[1]).strip()
-    print(f"First cell: '{first_cell}'")
-    print(f"Second cell: '{second_cell}'")
-    if not (first_cell.isdigit() or first_cell == 'Boat'):
-        print("Not a lineup row - returning False")
-        return False
-    is_cox = second_cell == 'Coxswain'
-    seat_number = 0 if is_cox else int(first_cell)
-    print(f"Is cox: {is_cox}, Seat number: {seat_number}")
-    for i, boat_name in enumerate(boat_names):
-        print(f"\nProcessing boat: {boat_name}")
-        if i + 1 < len(row_values):
-            rower_name = str(row_values[i + 1]).strip()
-            print(f"Rower name: '{rower_name}'")
-            if rower_name and rower_name.lower() != 'nan':
-                if is_cox:
-                    boat_configurations[boat_name]['has_cox'] = True
-                    print(f"Added cox to {boat_name}")
-                else:
-                    boat_configurations[boat_name]['seat_count'] = max(
-                        boat_configurations[boat_name]['seat_count'],
-                        seat_number
-                    )
-                    print(f"Updated seat count for {boat_name} to {boat_configurations[boat_name]['seat_count']}")
-    print(f"\nFinal boat configurations: {boat_configurations}")
-    return True
-
-def get_boat_class(config):
-    if config['seat_count'] == 0:
-        return None
-    return f"{config['seat_count']}{'+' if config['has_cox'] else '-'}"
-
-def insert_lineups(conn, piece_id, boat_id, rower_id, seat_number: int, is_coxswain: bool):
-    pass
-
-def get_boat_columns(data, boat_names):
-    boat_columns = {boat_name: [] for boat_name in boat_names}
-    for _, row in data.iterrows():
-        for i, boat_name in enumerate(boat_names):
-            if i + 1 < len(row):
-                value = row[i + 1]
-                boat_columns[boat_name].append(value)
-    return boat_columns
-
-def parse_data(file_path, engine):
-    logger.info(f"Parsing file: {file_path}")
-
-    if not os.path.exists(file_path):
-        logger.error(f"File not found: {file_path}")
-        sys.exit(1)
-
-    try:
-        data = parse_csv(file_path)
-        logger.info(f"Data shape: {data.shape}")
-    except Exception as e:
-        logger.error(f"Failed to read CSV file: {e}")
-        traceback.print_exc()
-        return
-
-    try:
-        with engine.begin() as conn:
-            logger.info("Database connection established.")
-            metadata = MetaData()
-            metadata.reflect(bind=engine)
-            rower_table = metadata.tables['rower']
-            boat_table = metadata.tables['boat']
-            event_table = metadata.tables['event']
-            piece_table = metadata.tables['piece']
-            lineup_table = metadata.tables['lineup']
-            result_table = metadata.tables['result']
-            seat_race_table = metadata.tables.get('seat_race')
-
+                
+            boat_row_idx = boat_row_idx[0]
+            boat_names = [str(name).strip() for name in raw_data.iloc[boat_row_idx, 1:] 
+                         if pd.notna(name) and str(name).strip()]
+            logger.info(f"Found boats: {boat_names}")
+            
+            # Extract boat information
+            boat_info = self._extract_boat_info(raw_data, boat_row_idx, boat_names)
+            
+            # Extract lineup information
+            lineup_info = self._extract_lineup_info(raw_data, boat_row_idx, boat_names)
+            
+            # Extract piece information
+            piece_info = self._extract_piece_info(raw_data, boat_row_idx, boat_names)
+            
+            # Extract seat race results if any
+            seat_race_info = self._extract_seat_race_info(raw_data)
+            
+            return {
+                'event_date': event_date,
+                'boats': boat_info,
+                'lineups': lineup_info,
+                'pieces': piece_info,
+                'seat_races': seat_race_info
+            }
+            
+        except Exception as e:
+            logger.error(f"Error parsing CSV file: {str(e)}", exc_info=True)
+            return None
+            
+    def _extract_date(self, date_cell):
+        """Extract and parse date from the first cell"""
+        if pd.isna(date_cell):
+            return None
+            
+        date_str = str(date_cell).strip()
+        date_patterns = ['%m/%d/%Y', '%m/%d/%y']
+        
+        for pattern in date_patterns:
             try:
-                first_column = data.columns[0]
-                logger.info(f"Attempting to parse date from column: {first_column}")
-                date_formats = ['%m/%d/%Y', '%m/%d/%y']
-                event_date = None
-                for date_format in date_formats:
-                    try:
-                        date_str = first_column.strip()
-                        event_date = datetime.strptime(date_str, date_format).date()
-                        logger.info(f"Successfully parsed date: {event_date}")
-                        break
-                    except ValueError:
-                        continue
-                if event_date:
-                    ins = event_table.insert().values(
-                        event_date=event_date,
-                        event_name=f'Practice on {event_date}'
-                    )
-                    result = conn.execute(ins)
-                    event_id = result.inserted_primary_key[0]
-                    logger.info(f"Created event with ID {event_id} for date {event_date}")
-                else:
-                    logger.error(f"Could not parse date from column: {first_column}")
-                    return
-            except Exception as e:
-                logger.error(f"Error creating event: {e}")
-                return
-
-            event_id = None
-            boat_names = []
-            boat_ids = {}
-            piece_id = None
-            piece_number = 0
-            seat_race_pieces = []
-            pieces = []
-            lineups = {}
-            has_coxswain = {}
-            seat_counts = {}
-            boat_configurations = {}
-
-            for index, row in data.iterrows():
-                row_values = row.fillna('').tolist()
-                first_cell = str(row_values[0]).strip()
-
-                if all(cell == '' for cell in row_values):
-                    continue
-
-                if index == 0 and first_cell and first_cell not in ['Boat', 'Coxswain']:
-                    try:
-                        logger.info(f"Attempting to parse date from: {first_cell}")
-                        date_formats = ['%m/%d/%Y', '%m/%d/%y', '%m/%d/%Y ', '%m/%d/%y ']
-                        event_date = None
-                        for date_format in date_formats:
-                            try:
-                                event_date = datetime.strptime(first_cell, date_format).date()
-                                logger.info(f"Successfully parsed date: {event_date}")
-                                break
-                            except ValueError:
-                                continue
-                        if event_date:
-                            event_name = f'Race on {event_date}'
-                            ins = event_table.insert().values(
-                                event_date=event_date,
-                                event_name=event_name
-                            )
-                            result = conn.execute(ins)
-                            event_id = result.inserted_primary_key[0]
-                            logger.info(f"Created event: {event_name} with ID {event_id}")
-                        else:
-                            logger.warning(f"Could not parse date from: {first_cell}")
-                    except SQLAlchemyError as e:
-                        logger.error(f"Database error creating event: {e}")
-                    continue
-
-                if first_cell == 'Boat':
-                    boat_names = [str(name).strip() for name in row_values[1:]
-                                  if name and 'over' not in name and '/' not in name]
-                    boat_names = [name for name in boat_names if name]
-                    logger.debug(f"Processing row: {row_values}")
-                    logger.debug(f"Boat names: {boat_names}")
-
-                    boat_configurations = {boat_name: {'seat_count': 0, 'has_cox': False} for boat_name in boat_names}
-                    logger.debug(f"Current boat configurations: {boat_configurations}")
-                    logger.debug(f"First cell: {first_cell}")
-
-                    boat_columns = get_boat_columns(data, boat_names)
-                    logger.debug(f"Boat columns: {boat_columns}")
-
-                    determine_boat_configuration(boat_columns, boat_names, boat_configurations)
-
-                    for i, boat_name in enumerate(boat_names):
-                        try:
-                            boat_id = get_or_create_boat_id(
-                                conn,
-                                boat_table,
-                                boat_name,
-                                boat_class=boat_class,
-                                boat_rank=boat_rank
-                            )
-                            boat_ids[(boat_name, boat_class, boat_rank)] = boat_id
-                            logger.debug(f"Created/found boat {boat_name} with ID {boat_id} (rank {boat_rank})")
-                        except SQLAlchemyError as e:
-                            logger.error(f"Error creating boat {boat_name}: {e}")
-
-                    lineups = {boat_name: [] for boat_name in boat_names}
-                    has_coxswain = {boat_name: False for boat_name in boat_names}
-                    seat_counts = {boat_name: 0 for boat_name in boat_names}
-                    continue
-
-                if first_cell.isdigit() or first_cell == 'Coxswain':
-                    seat_number = 0 if first_cell == 'Coxswain' else int(first_cell)
-                    is_cox = first_cell == 'Coxswain'
-                    
-                    logger.debug(f"Processing lineup row: {row_values}")
-                    logger.debug(f"Seat number: {seat_number}, Is coxswain: {is_cox}")
-                    
-                    for i, boat_name in enumerate(boat_names):
-                        if i + 1 < len(row_values):
-                            rower_name = str(row_values[i + 1]).strip()
-                            logger.debug(f"Processing boat: {boat_name}, Rower name: '{rower_name}'")
-                            if rower_name and rower_name.lower() != 'nan':
-                                if '/' in rower_name:
-                                    rower_names = [name.strip() for name in rower_name.split('/')]
-                                else:
-                                    rower_names = [rower_name]
-                                for name in rower_names:
-                                    rower_id = get_or_create_rower_id(conn, rower_table, name)
-                                    logger.debug(f"Rower ID for '{name}': {rower_id}")
-                                    if rower_id:
-                                        if is_cox:
-                                            has_coxswain[boat_name] = True
-                                            logger.debug(f"Marked {boat_name} as having a coxswain")
-                                        else:
-                                            seat_counts[boat_name] = max(seat_counts[boat_name], seat_number)
-                                        
-                                        lineups[boat_name].append({
-                                            'rower_id': rower_id,
-                                            'seat_number': seat_number,
-                                            'is_coxswain': is_cox
-                                        })
-                                        logger.debug(f"Added lineup entry for {boat_name}: {lineups[boat_name][-1]}")
-                    continue
-
-                if first_cell.startswith('Piece'):
-                    piece_number += 1
-                    piece_description = first_cell
-                    ins = piece_table.insert().values(
-                        event_id=event_id,
-                        piece_number=piece_number,
-                        description=piece_description
-                    )
-                    result = conn.execute(ins)
-                    piece_id = result.inserted_primary_key[0]
-                    logger.info(f"Created piece {piece_number}: {piece_description}")
-                    for i, boat_name in enumerate(boat_names):
-                        if i + 1 < len(row_values):
-                            time_str = row_values[i + 1]
-                            time_in_seconds = convert_time_to_seconds(time_str)
-                            if time_in_seconds is not None:
-                                boat_rank = i + 1
-                                num_rowers = seat_counts.get(boat_name, 8)
-                                has_cox = has_coxswain.get(boat_name, False)
-                                boat_class = f'{num_rowers}{"+" if has_cox else "-"}'
-                                boat_id = None
-                                for key, value in boat_ids.items():
-                                    if key[0] == boat_name and key[2] == boat_rank:
-                                        boat_id = value
-                                        old_key = key
-                                        break
-                                if boat_id:
-                                    try:
-                                        current_class = key[1]
-                                        if current_class != boat_class:
-                                            update_stmt = (
-                                                update(boat_table)
-                                                .where(boat_table.c.boat_id == boat_id)
-                                                .values(boat_class=boat_class)
-                                            )
-                                            conn.execute(update_stmt)
-                                            new_key = (boat_name, boat_class, boat_rank)
-                                            boat_ids[new_key] = boat_ids.pop(old_key)
-                                        ins = result_table.insert().values(
-                                            piece_id=piece_id,
-                                            boat_id=boat_id,
-                                            time=time_in_seconds
-                                        )
-                                        conn.execute(ins)
-                                        logger.info(f"Recorded time {time_str} for boat {boat_name}")
-                                    except SQLAlchemyError as e:
-                                        logger.error(f"Database error updating boat {boat_name}: {e}")
-                                        continue
-
-                if 'Pieces Switched' in first_cell:
-                    match = re.search(r'(\d+)/(\d+)', str(row_values[1]))
+                return datetime.strptime(date_str, pattern).date()
+            except ValueError:
+                continue
+                
+        logger.warning(f"Could not parse date from: {date_str}")
+        return None
+        
+    def _extract_boat_info(self, data, boat_row_idx, boat_names):
+        """Extract information about each boat"""
+        boat_info = {}
+        
+        # Check where "Coxswain" row is
+        cox_row_idx = data[data[0] == "Coxswain"].index
+        has_cox = len(cox_row_idx) > 0
+        
+        # Determine the highest seat number for each boat
+        seat_rows = []
+        for idx, row in data.iterrows():
+            if idx > boat_row_idx and str(row[0]).strip().isdigit():
+                seat_rows.append(idx)
+        
+        max_seat = 0
+        if seat_rows:
+            max_seat = max([int(str(data.iloc[idx, 0]).strip()) for idx in seat_rows])
+            
+        for i, boat_name in enumerate(boat_names):
+            boat_info[boat_name] = {
+                'boat_class': f"{max_seat}{'+' if has_cox else '-'}",
+                'boat_rank': i + 1  # Assign rank based on order in CSV
+            }
+            
+        return boat_info
+        
+    def _extract_lineup_info(self, data, boat_row_idx, boat_names):
+        """Extract lineup information (who sits where in each boat)"""
+        lineups = {boat_name: [] for boat_name in boat_names}
+        
+        # Look for coxswain row
+        cox_row_idx = data[data[0] == "Coxswain"].index
+        if cox_row_idx.size > 0:
+            cox_row_idx = cox_row_idx[0]
+            for i, boat_name in enumerate(boat_names):
+                col_idx = i + 1
+                if col_idx < data.shape[1]:
+                    cox_name = str(data.iloc[cox_row_idx, col_idx]).strip()
+                    if cox_name and cox_name.lower() not in ('nan', ''):
+                        lineups[boat_name].append({
+                            'rower_name': cox_name,
+                            'seat_number': 0,
+                            'is_coxswain': True
+                        })
+        
+        # Look for numbered seats (1-8)
+        for idx, row in data.iterrows():
+            first_cell = str(row[0]).strip()
+            if first_cell.isdigit() and int(first_cell) > 0:
+                seat_number = int(first_cell)
+                for i, boat_name in enumerate(boat_names):
+                    col_idx = i + 1
+                    if col_idx < data.shape[1]:
+                        rower_cell = str(data.iloc[idx, col_idx]).strip()
+                        if rower_cell and rower_cell.lower() not in ('nan', ''):
+                            # Handle paired rowers (with slash)
+                            if '/' in rower_cell:
+                                rower_names = [name.strip() for name in rower_cell.split('/')]
+                                for rower_name in rower_names:
+                                    lineups[boat_name].append({
+                                        'rower_name': rower_name,
+                                        'seat_number': seat_number,
+                                        'is_coxswain': False
+                                    })
+                            else:
+                                lineups[boat_name].append({
+                                    'rower_name': rower_cell,
+                                    'seat_number': seat_number,
+                                    'is_coxswain': False
+                                })
+                                
+        return lineups
+        
+    def _extract_piece_info(self, data, boat_row_idx, boat_names):
+        """Extract piece (race segment) information and times"""
+        pieces = []
+        
+        for idx, row in data.iterrows():
+            first_cell = str(row[0]).strip()
+            
+            # Check for any "Piece" text
+            match = re.search(r'[Pp]iece\s*(\d+)', first_cell)
+            if match:
+                piece_number = int(match.group(1))
+                piece_times = {}
+                
+                # Process boat times
+                for i, boat_name in enumerate(boat_names):
+                    col_idx = i + 1
+                    if col_idx < data.shape[1]:
+                        time_str = str(data.iloc[idx, col_idx]).strip()
+                        if time_str and time_str.lower() not in ('nan', ''):
+                            piece_times[boat_name] = self._convert_time_to_seconds(time_str)
+                
+                # Process split times and margins (existing code)
+                # ...
+                
+                pieces.append({
+                    'piece_number': piece_number,
+                    'results': piece_times
+                })
+        
+        return pieces
+        
+    def _extract_seat_race_info(self, data):
+        """Extract seat race results (if any)"""
+        seat_races = []
+        
+        # Look for 'Pieces Switched' row
+        for idx, row in data.iterrows():
+            first_cell = str(row[0]).strip()
+            if 'Pieces Switched' in first_cell:
+                pieces_switched = None
+                # Look for piece numbers that were switched
+                if idx < data.shape[0] and 1 < data.shape[1]:
+                    switch_info = str(data.iloc[idx, 1]).strip()
+                    match = re.search(r'(\d+)/(\d+)', switch_info)
                     if match:
-                        piece1, piece2 = int(match.group(1)), int(match.group(2))
-                        seat_race_pieces.extend([piece1, piece2])
-                        logger.info(f"Recorded switched pieces: {piece1} and {piece2}")
-                    continue
+                        pieces_switched = [int(match.group(1)), int(match.group(2))]
+                
+                # Look for results in the next row
+                if idx + 1 < data.shape[0]:
+                    result_row = data.iloc[idx + 1]
+                    if str(result_row[0]).strip() == 'Result':
+                        for i in range(1, data.shape[1]):
+                            result_text = str(result_row[i]).strip()
+                            if result_text and 'over' in result_text.lower():
+                                match = re.search(r'(\w+)\s+over\s+(\w+)\s+by\s+(?:a\s+total\s+)?([0-9.]+)\s*secs?', result_text)
+                                if match:
+                                    winner, loser, margin = match.group(1), match.group(2), float(match.group(3))
+                                    seat_races.append({
+                                        'pieces_switched': pieces_switched,
+                                        'winner': winner,
+                                        'loser': loser,
+                                        'margin': margin,
+                                        'notes': result_text
+                                    })
+                    
+        return seat_races
+        
+    def _convert_time_to_seconds(self, time_str):
+        """Convert time string (MM:SS.ss) to seconds"""
+        try:
+            time_str = str(time_str).strip()
+            if not time_str or '/' in time_str:
+                return None
+            if ':' in time_str:
+                parts = time_str.split(':')
+                if len(parts) == 2:
+                    minutes, seconds = float(parts[0]), float(parts[1])
+                    return minutes * 60 + seconds
+                elif len(parts) == 3:
+                    hours, minutes, seconds = float(parts[0]), float(parts[1]), float(parts[2])
+                    return hours * 3600 + minutes * 60 + seconds
+            else:
+                try:
+                    return float(time_str)
+                except ValueError:
+                    return None
+        except (ValueError, AttributeError):
+            logger.warning(f"Could not convert time string to seconds: '{time_str}'")
+            return None
+            
+    def load_data_to_db(self, parsed_data):
+        """Load parsed data into the database"""
+        if not parsed_data:
+            logger.error("No data to load")
+            return
+            
+        try:
+            with self.engine.begin() as conn:
+                # Create event
+                event_id = self._create_event(conn, parsed_data['event_date'])
+                if not event_id:
+                    logger.error("Failed to create event")
+                    return
+                    
+                # Create boats
+                boat_ids = {}
+                for boat_name, boat_data in parsed_data['boats'].items():
+                    boat_id = self._get_or_create_boat(
+                        conn, 
+                        boat_name, 
+                        boat_data['boat_class'],
+                        boat_data['boat_rank']
+                    )
+                    boat_ids[boat_name] = boat_id
+                    
+                # Create pieces and results
+                piece_ids = {}
+                for piece_data in parsed_data['pieces']:
+                    piece_id = self._create_piece(
+                        conn,
+                        event_id,
+                        piece_data['piece_number']
+                    )
+                    piece_ids[piece_data['piece_number']] = piece_id
+                    
+                    # Add results for each boat
+                    for boat_name, result_data in piece_data['results'].items():
+                        if boat_name in boat_ids:
+                            boat_id = boat_ids[boat_name]
+                            self._create_result(
+                                conn,
+                                piece_id,
+                                boat_id,
+                                result_data
+                            )
+                
+                # Create rowers and lineups
+                for boat_name, lineup_data in parsed_data['lineups'].items():
+                    if boat_name in boat_ids:
+                        boat_id = boat_ids[boat_name]
+                        for rower_data in lineup_data:
+                            rower_id = self._get_or_create_rower(
+                                conn,
+                                rower_data['rower_name']
+                            )
+                            
+                            # Add to lineup for each piece
+                            for piece_number, piece_id in piece_ids.items():
+                                self._create_lineup(
+                                    conn,
+                                    piece_id,
+                                    boat_id,
+                                    rower_id,
+                                    rower_data['seat_number'],
+                                    rower_data['is_coxswain']
+                                )
+                
+                # Create seat races
+                for seat_race in parsed_data['seat_races']:
+                    self._create_seat_race(conn, event_id, seat_race)
+                    
+                logger.info(f"Successfully loaded data for event {event_id}")
+                
+        except Exception as e:
+            logger.error(f"Error loading data to database: {str(e)}", exc_info=True)
+    
+    def _create_event(self, conn, event_date):
+        """Create an event in the database"""
+        if not event_date:
+            return None
+            
+        event_name = f'Race on {event_date}'
+        ins = self.tables['event'].insert().values(
+            event_date=event_date,
+            event_name=event_name
+        )
+        result = conn.execute(ins)
+        event_id = result.inserted_primary_key[0]
+        logger.info(f"Created event: {event_name} with ID {event_id}")
+        return event_id
+        
+    def _get_or_create_boat(self, conn, boat_name, boat_class, boat_rank):
+        """Get or create a boat in the database"""
+        sel = select(self.tables['boat'].c.boat_id).where(
+            (self.tables['boat'].c.name == boat_name) &
+            (self.tables['boat'].c.boat_class == boat_class)
+        )
+        result = conn.execute(sel).fetchone()
+        if result:
+            boat_id = result[0]
+            # Update boat rank if needed
+            upd = update(self.tables['boat']).where(
+                self.tables['boat'].c.boat_id == boat_id
+            ).values(
+                boat_rank=boat_rank
+            )
+            conn.execute(upd)
+            return boat_id
+        else:
+            ins = self.tables['boat'].insert().values(
+                name=boat_name,
+                boat_class=boat_class,
+                boat_rank=boat_rank
+            )
+            result = conn.execute(ins)
+            boat_id = result.inserted_primary_key[0]
+            logger.info(f"Created boat: {boat_name} (class: {boat_class}, rank: {boat_rank})")
+            return boat_id
+            
+    def _get_or_create_rower(self, conn, rower_name):
+        """Get or create a rower in the database"""
+        if not rower_name:
+            return None
+            
+        sel = select(self.tables['rower'].c.rower_id).where(
+            self.tables['rower'].c.name == rower_name
+        )
+        result = conn.execute(sel).fetchone()
+        if result:
+            return result[0]
+        else:
+            ins = self.tables['rower'].insert().values(
+                name=rower_name
+            )
+            result = conn.execute(ins)
+            rower_id = result.inserted_primary_key[0]
+            logger.info(f"Created rower: {rower_name}")
+            return rower_id
+            
+    def _create_piece(self, conn, event_id, piece_number):
+        """Create a piece in the database"""
+        description = f"Piece {piece_number}"
+        ins = self.tables['piece'].insert().values(
+            event_id=event_id,
+            piece_number=piece_number,
+            description=description
+        )
+        result = conn.execute(ins)
+        piece_id = result.inserted_primary_key[0]
+        logger.info(f"Created piece: {description}")
+        return piece_id
+        
+    def _create_result(self, conn, piece_id, boat_id, result_data):
+        """Create a result in the database"""
+        if isinstance(result_data, dict):
+            time_value = result_data.get('time')
+            split_value = result_data.get('split')
+            margin_value = result_data.get('margin')
+        else:
+            time_value = result_data
+            split_value = None
+            margin_value = None
+            
+        ins = self.tables['result'].insert().values(
+            piece_id=piece_id,
+            boat_id=boat_id,
+            time=time_value,
+            split=split_value,
+            margin=margin_value
+        )
+        conn.execute(ins)
+        logger.debug(f"Created result for boat {boat_id}, piece {piece_id}")
+        
+    def _create_lineup(self, conn, piece_id, boat_id, rower_id, seat_number, is_coxswain):
+        """Create a lineup entry in the database"""
+        if not rower_id:
+            return
+            
+        ins = self.tables['lineup'].insert().values(
+            piece_id=piece_id,
+            boat_id=boat_id,
+            rower_id=rower_id,
+            seat_number=seat_number,
+            is_coxswain=is_coxswain
+        )
+        conn.execute(ins)
+        logger.debug(f"Added rower {rower_id} to boat {boat_id}, piece {piece_id}")
+        
+    def _create_seat_race(self, conn, event_id, seat_race_data):
+        """Create a seat race entry in the database"""
+        winner_id = self._get_or_create_rower(conn, seat_race_data['winner'])
+        loser_id = self._get_or_create_rower(conn, seat_race_data['loser'])
+        
+        ins = self.tables['seat_race'].insert().values(
+            event_id=event_id,
+            piece_numbers=seat_race_data['pieces_switched'],
+            rower_id_1=winner_id,
+            rower_id_2=loser_id,
+            time_difference=seat_race_data['margin'],
+            winner_id=winner_id,
+            notes=seat_race_data['notes']
+        )
+        conn.execute(ins)
+        logger.info(f"Created seat race result: {seat_race_data['notes']}")
 
-                if 'Result' in first_cell or any('over' in str(cell) for cell in row_values):
-                    for cell in row_values:
-                        cell = str(cell).strip()
-                        if 'over' in cell.lower():
-                            match = re.search(r'(\w+)\s+over\s+(\w+)\s+by\s+(?:a\s+total\s+)?([0-9.]+)\s*secs?', cell)
-                            if match:
-                                winner, loser, margin = match.group(1), match.group(2), float(match.group(3))
-                                winner_id = get_or_create_rower_id(conn, rower_table, winner)
-                                loser_id = get_or_create_rower_id(conn, rower_table, loser)
-                                if winner_id and loser_id and seat_race_pieces:
-                                    ins = seat_race_table.insert().values(
-                                        event_id=event_id,
-                                        piece_numbers=seat_race_pieces,
-                                        rower_id_1=winner_id,
-                                        rower_id_2=loser_id,
-                                        time_difference=margin,
-                                        winner_id=winner_id,
-                                        notes=cell
-                                    )
-                                    conn.execute(ins)
-                                    logger.info(f"Recorded seat race result: {winner} over {loser} by {margin} seconds")
-                    continue
 
-    except Exception as e:
-        logger.error(f"An error occurred while parsing the file: {e}")
-        traceback.print_exc()
-
-def main():
-    logger.info("Starting the parsing process.")
-    water_data_dir = '/home/pjreilly44/rowing-analytics/data'
-    if not os.path.exists(water_data_dir):
-        logger.error(f"The directory {water_data_dir} does not exist.")
-        return
-    files = os.listdir(water_data_dir)
-    logger.info(f"Found files in directory: {files}")
-    csv_count = 0
-    for filename in files:
-        if filename.endswith('.csv'):
-            csv_count += 1
-            water_filepath = os.path.join(water_data_dir, filename)
-            logger.info(f"Processing file {csv_count}: {filename}")
-            parse_data(water_filepath, engine)
-    if csv_count == 0:
-        logger.warning("No CSV files found in the data directory!")
-
+# Example usage
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(level=logging.DEBUG)
+    load_dotenv()
+    password = os.getenv('PASSWORD')
+    engine = create_engine(f'postgresql://postgres:{password}@localhost/rowing-analytics')
+    
+    parser = RowingDataParser(engine)
+    data_dir = './data'
+    
+    for filename in os.listdir(data_dir):
+        if filename.endswith('.csv') and not filename.endswith('.csv:Zone.Identifier'):
+            file_path = os.path.join(data_dir, filename)
+            parsed_data = parser.parse_csv_file(file_path)
+            if parsed_data:
+                parser.load_data_to_db(parsed_data)
