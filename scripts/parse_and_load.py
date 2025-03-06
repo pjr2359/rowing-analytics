@@ -204,14 +204,6 @@ class RowingDataParser:
         for idx, row in data.iterrows():
             first_cell = str(row[0]).strip()
             if 'Pieces Switched' in first_cell:
-                pieces_switched = None
-                # Look for piece numbers that were switched
-                if idx < data.shape[0] and 1 < data.shape[1]:
-                    switch_info = str(data.iloc[idx, 1]).strip()
-                    match = re.search(r'(\d+)/(\d+)', switch_info)
-                    if match:
-                        pieces_switched = [int(match.group(1)), int(match.group(2))]
-                
                 # Look for results in the next row
                 if idx + 1 < data.shape[0]:
                     result_row = data.iloc[idx + 1]
@@ -219,9 +211,18 @@ class RowingDataParser:
                         for i in range(1, data.shape[1]):
                             result_text = str(result_row[i]).strip()
                             if result_text and 'over' in result_text.lower():
-                                match = re.search(r'(\w+)\s+over\s+(\w+)\s+by\s+(?:a\s+total\s+)?([0-9.]+)\s*secs?', result_text)
+                                # Get pieces_switched for this column
+                                pieces_switched = None
+                                switch_info = str(data.iloc[idx, i]).strip()
+                                match = re.search(r'(\d+)/(\d+)', switch_info)
+                                if match:
+                                    pieces_switched = [int(match.group(1)), int(match.group(2))]
+                                
+                                # Improved regex to match more formats
+                                match = re.search(r'(\w+)\s+over\s+(\w+)\s+by\s+(?:a\s+total\s+)?([0-9.]+)\s*(?:seconds|secs)', result_text, re.IGNORECASE)
                                 if match:
                                     winner, loser, margin = match.group(1), match.group(2), float(match.group(3))
+                                    logger.debug(f"Found seat race: {winner} over {loser} by {margin}")
                                     seat_races.append({
                                         'pieces_switched': pieces_switched,
                                         'winner': winner,
@@ -229,9 +230,12 @@ class RowingDataParser:
                                         'margin': margin,
                                         'notes': result_text
                                     })
-                    
-        return seat_races
+                                else:
+                                    logger.warning(f"Could not parse seat race result: '{result_text}'")
         
+        logger.info(f"Extracted {len(seat_races)} seat races")
+        return seat_races
+            
     def _convert_time_to_seconds(self, time_str):
         """Convert time string (MM:SS.ss) to seconds"""
         try:
