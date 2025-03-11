@@ -126,11 +126,7 @@ class ComprehensiveAnalysis:
             save_path='analysis_output/erg_water_correlation.png'
         )
         
-        # Add weight-adjusted analysis
-        self.erg_processor.analyze_water_erg_correlation_matrix(
-            show_plot=False,
-            save_path='analysis_output/weight_adjusted_correlation.png'
-        )
+        
     
     def boat_class_analysis(self):
         """Analyze which rowers specialize in particular boat classes"""
@@ -143,29 +139,23 @@ class ComprehensiveAnalysis:
         """Predict optimal lineups based on all available data"""
         # Get all rower names from database
         connection = self.water_analyzer.engine.connect()
-        rowers_df = pd.read_sql("SELECT last_name FROM rower ORDER BY last_name", connection)
+        rowers_df = pd.read_sql("SELECT name FROM rower ORDER BY name", connection)
         connection.close()
         
-        all_rowers = rowers_df['last_name'].tolist()
+        all_rowers = rowers_df['name'].tolist()
         
         # Predict 8+ lineup
-        self.erg_processor.predict_optimal_lineup(
-            available_rowers=all_rowers,
+        self.erg_processor.predict_lineup_performance(  # Changed from predict_optimal_lineup
+            rowers=all_rowers,
             boat_class='8+',
-            seats=8,
-            balance_weight=True,
-            balance_sides=True,
             show_plot=False,
             save_path='analysis_output/optimal_8plus_lineup.png'
         )
         
         # Predict 4+ lineup
-        self.erg_processor.predict_optimal_lineup(
-            available_rowers=all_rowers,
+        self.erg_processor.predict_lineup_performance(  # Changed from predict_optimal_lineup
+            rowers=all_rowers,
             boat_class='4+',
-            seats=4,
-            balance_weight=True,
-            balance_sides=True,
             show_plot=False,
             save_path='analysis_output/optimal_4plus_lineup.png'
         )
