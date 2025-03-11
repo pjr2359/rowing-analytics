@@ -246,6 +246,10 @@ class ErgDataProcessor:
             
         if self.performance_data is None:
             self.load_on_water_data()
+
+        if self.erg_data is None or self.performance_data is None:
+            logger.error("Failed to load one or both data sources")
+            return pd.DataFrame()
             
         if self.erg_data.empty or self.performance_data.empty:
             logger.error("Cannot combine data: one or both sources are empty")
