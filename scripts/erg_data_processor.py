@@ -8,6 +8,18 @@ import seaborn as sns
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
+DEFAULT_GMS_TIMES = {
+    '8+': 330.0,  # ~5:30 for 2k
+    '4+': 365.0,  # ~6:05 for 2k
+    '4x': 355.0,  # ~5:55 for 2k
+    '2-': 395.0,  # ~6:35 for 2k
+    '2x': 385.0,  # ~6:25 for 2k
+    '1x': 420.0,  # ~7:00 for 2k
+    '4-': 360.0,  # ~6:00 for 2k
+    '2+': 400.0,  # ~6:40 for 2k
+    'Unknown': 400.0
+}
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -24,45 +36,98 @@ class ErgDataProcessor:
         self.erg_data = None
         self.performance_data = None
         self.combined_data = None
+        self.DEFAULT_GMS_TIMES = DEFAULT_GMS_TIMES
         
     def load_erg_data(self, directory_path='./erg_data'):
         """Load all erg data files from the specified directory"""
         all_data = []
         
         try:
+            if not os.path.exists(directory_path):
+                logger.warning(f"Erg data directory '{directory_path}' does not exist")
+                self.erg_data = pd.DataFrame()
+                return self.erg_data
+                
+            self.erg_data_dir = directory_path
+        
+            # Define test type detection patterns    
+            test_type_patterns = {
+                '2k': ['2k', '2000m', '2000'],
+                '5k': ['5k', '5000m', '5000'],
+                '6k': ['6k', '6000m', '6000', '2x6k'],
+                '30min': ['30min', '30m', '30\''],
+                '4x10min': ['4x10', '4x10m', '4x10min'],
+                '3x3k': ['3x3k', '3x3000'],
+                '3x4k': ['3x4k', '3x4000'],
+                '4x2k': ['4x2k', '4x2000']
+            }
+            
             for filename in os.listdir(directory_path):
                 if filename.endswith('.csv'):
                     file_path = os.path.join(directory_path, filename)
                     logger.info(f"Processing erg file: {filename}")
                     
-                    # Try to determine test type from filename
+                    # Try to determine test type from filename using patterns
                     test_type = 'unknown'
-                    if '2k' in filename.lower():
-                        test_type = '2k'
-                    elif '6k' in filename.lower():
-                        test_type = '6k'
-                    elif '30min' in filename.lower() or '30m' in filename.lower():
-                        test_type = '30min'
+                    for t_type, patterns in test_type_patterns.items():
+                        if any(pattern in filename.lower() for pattern in patterns):
+                            test_type = t_type
+                            break
+                            
+                    # Extract date from filename more robustly
+                    date_match = re.search(r'(\d{1,2})_(\d{1,2})', filename)
+                    if date_match:
+                        month, day = date_match.groups()
+                        # Determine year based on month (assuming school year)
+                        current_month = datetime.now().month
+                        year = datetime.now().year
                         
-                    # Read the CSV file
-                    df = pd.read_csv(file_path)
+                        # If current month < 7 (July) and file month > 7, it's previous year
+                        if current_month < 7 and int(month) > 7:
+                            year -= 1
+                        # If current month > 7 and file month < 7, it's next year
+                        elif current_month > 7 and int(month) < 7:
+                            year += 1
+                            
+                        test_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                    else:
+                        # Fallback to file modification date
+                        mod_time = os.path.getmtime(file_path)
+                        test_date = datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d")
+                        
+                    # Read the CSV file with flexible parsing
+                    try:
+                        df = pd.read_csv(file_path, na_values=['', 'NA', 'DNS', '#REF!', 'DNF'])
+                    except Exception as e:
+                        logger.warning(f"Error reading {filename}: {e}")
+                        continue
+                    
+                    # Clean up column names (lowercase, strip whitespace)
+                    df.columns = [col.lower().strip() for col in df.columns]
                     
                     # Basic validation and cleanup
-                    if 'name' in df.columns:
-                        name_col = 'name'
-                    elif 'rower' in df.columns:
-                        name_col = 'rower'
-                    elif 'rower_name' in df.columns:
-                        name_col = 'rower_name'
-                    else:
-                        # Try to find a name column
+                    # Look for name column with multiple possible names
+                    name_col = None
+                    for possible_name in ['name', 'rower', 'rower_name']:
+                        if possible_name in df.columns:
+                            name_col = possible_name
+                            break
+                    
+                    # If not found by exact match, try contains
+                    if name_col is None:
                         for col in df.columns:
                             if 'name' in col.lower():
                                 name_col = col
                                 break
-                        else:
-                            logger.warning(f"Could not find name column in {filename}")
-                            continue
+                                
+                    # If still no name column, skip this file
+                    if name_col is None:
+                        logger.warning(f"Could not find name column in {filename}")
+                        continue
+                        
+                    # Filter out rows with missing names or special rows like 'BIKE', 'RX'
+                    df = df[df[name_col].notna()]
+                    df = df[~df[name_col].str.contains('BIKE|RX|Mgr|Cox', case=False, na=False)]
                     
                     # Standardize column names
                     df = df.rename(columns={name_col: 'rower_name'})
@@ -99,24 +164,68 @@ class ErgDataProcessor:
                         mod_time = os.path.getmtime(file_path)
                         df['test_date'] = pd.to_datetime(mod_time, unit='s')
                     
+                    # Add test date column with proper datetime format
+                    df['test_date'] = pd.to_datetime(test_date)
+                    
                     # Add test type column
                     df['test_type'] = test_type
                     
-                    # Standardize time columns
+                    # Add source filename
+                    df['source_file'] = filename
+                    
+                    # Filter out rows with missing erg times
+                    df = df[df['erg_time_seconds'].notna()]
+                    
+                    all_data.append(df)
+                    
+                    # Standardize time columns - search for split or time
                     time_col = None
-                    for col in df.columns:
-                        if 'time' in col.lower() or 'split' in col.lower():
-                            time_col = col
+                    for col_pattern in ['time', 'split', 'overall']:
+                        for col in df.columns:
+                            if col_pattern in col.lower():
+                                time_col = col
+                                break
+                        if time_col:
                             break
                             
                     if time_col is not None:
                         df = df.rename(columns={time_col: 'erg_time'})
                         
-                        # Convert time strings to seconds if not already
-                        if df['erg_time'].dtype == object:
-                            df['erg_time_seconds'] = df['erg_time'].apply(self._time_to_seconds)
-                        else:
-                            df['erg_time_seconds'] = df['erg_time']
+                        # Convert time strings to seconds
+                        df['erg_time_seconds'] = df['erg_time'].apply(self._time_to_seconds)
+                    else:
+                        logger.warning(f"No time/split column found in {filename}")
+                        continue
+                        
+                    # Look for weight column
+                    weight_col = None
+                    for col in df.columns:
+                        if 'weight' in col.lower():
+                            weight_col = col
+                            break
+                            
+                    if weight_col:
+                        df['weight'] = pd.to_numeric(df[weight_col], errors='coerce')
+                        
+                    # Look for power-to-weight ratio column
+                    p2w_col = None
+                    for col in df.columns:
+                        if 'watt' in col.lower() and 'lb' in col.lower():
+                            p2w_col = col
+                            break
+                            
+                    if p2w_col:
+                        df['watts_per_lb'] = pd.to_numeric(df[p2w_col], errors='coerce')
+                        
+                    # Add side preference if available (P/S)
+                    side_col = None
+                    for col in df.columns:
+                        if col.lower() == 'side':
+                            side_col = col
+                            break
+                            
+                    if side_col:
+                        df['side'] = df[side_col]
                     
                     # Add source filename
                     df['source_file'] = filename
@@ -249,11 +358,11 @@ class ErgDataProcessor:
 
         if self.erg_data is None or self.performance_data is None:
             logger.error("Failed to load one or both data sources")
-            return pd.DataFrame()
+            return None
             
         if self.erg_data.empty or self.performance_data.empty:
             logger.error("Cannot combine data: one or both sources are empty")
-            return pd.DataFrame()
+            return self.performance_data.copy() if not self.performance_data.empty else None
             
         try:
             # Filter erg data to recent results only
@@ -443,7 +552,7 @@ class ErgDataProcessor:
         FROM 
             result r
             JOIN boat b ON r.boat_id = b.boat_id
-            JOIN lineup l ON r.result_id = l.result_id
+            JOIN lineup l ON r.boat_id = l.boat_id AND r.piece_id = l.piece_id
         WHERE 
             b.boat_class = '{boat_class}'
         GROUP BY 
@@ -689,15 +798,12 @@ class ErgDataProcessor:
         try:
             from rowing_analysis import GMS_TIMES
         except ImportError:
-            # Define basic GMS times if not available
-            GMS_TIMES = {
-                '8+': 350.0,  # Estimated 2k time
-                '4+': 380.0,
-                '4x': 370.0,
-                '2-': 410.0,
-                '2x': 400.0,
-                '1x': 430.0,
-            }
+            # Use default GMS times if not available
+            GMS_TIMES = self.DEFAULT_GMS_TIMES
+        except AttributeError:
+            # Use default GMS times if not available
+            GMS_TIMES = self.DEFAULT_GMS_TIMES
+                
             
         # Calculate percentage off GMS
         self.performance_data['gms_time'] = self.performance_data['boat_identifier'].map(GMS_TIMES)
@@ -1455,11 +1561,14 @@ class ErgDataProcessor:
                     result_row['rower2_erg_date'] = erg2['date']
                     result_row['erg_difference'] = erg2['score'] - erg1['score']  # Positive = rower1 faster
                     
-                    # Add physiological context
-                    if 'weight' in erg1 and 'weight' in erg2:
-                        result_row['rower1_weight'] = erg1['weight']
-                        result_row['rower2_weight'] = erg2['weight']
+                    # Add physiological context with safe checks
+                    result_row['rower1_weight'] = erg1.get('weight')
+                    result_row['rower2_weight'] = erg2.get('weight')
+                    
+                    if erg1.get('weight') is not None and erg2.get('weight') is not None:
                         result_row['weight_difference'] = erg2['weight'] - erg1['weight']
+                    else:
+                        result_row['weight_difference'] = None
                     
                     if 'power_to_weight' in erg1 and 'power_to_weight' in erg2:
                         result_row['rower1_p2w'] = erg1['power_to_weight']
@@ -1513,6 +1622,54 @@ class ErgDataProcessor:
         if erg_history:
             return erg_history[0]
         return None
+    
+    def _get_recent_erg_scores(self, rower_names):
+        """Get the most recent erg scores for a list of rowers"""
+        lookup = {}
+        
+        if self.erg_data is None:
+            self.load_erg_data()
+            
+        if self.erg_data is None or self.erg_data.empty:
+            return lookup
+            
+        for rower in rower_names:
+            # Find all erg tests for this rower
+            rower_ergs = self.erg_data[self.erg_data['rower_name'] == rower]
+            
+            if rower_ergs.empty:
+                logger.warning(f"No erg data found for {rower}")
+                continue
+                
+            # Group by test type
+            erg_history = []
+            for _, row in rower_ergs.iterrows():
+                # Ensure test_date is properly converted to datetime
+                try:
+                    test_date = pd.to_datetime(row['test_date'])
+                except:
+                    logger.warning(f"Invalid test date for {rower}: {row['test_date']}")
+                    test_date = pd.Timestamp.now()
+                    
+                # Safely extract values with defaults
+                erg_time = row['erg_time_seconds'] if 'erg_time_seconds' in row and pd.notna(row['erg_time_seconds']) else None
+                weight = row['weight'] if 'weight' in row and pd.notna(row['weight']) else None
+                p2w = row['watts_per_lb'] if 'watts_per_lb' in row and pd.notna(row['watts_per_lb']) else None
+                test_type = row['test_type'] if 'test_type' in row else 'unknown'
+                
+                if erg_time is not None:
+                    erg_history.append({
+                        'date': test_date,
+                        'score': float(erg_time),
+                        'weight': float(weight) if weight is not None else None,
+                        'power_to_weight': float(p2w) if p2w is not None else None,
+                        'test_type': test_type
+                    })
+                
+            # Sort by date with most recent first    
+            lookup[rower] = sorted(erg_history, key=lambda x: x['date'], reverse=True)
+            
+        return lookup
 
     def analyze_water_erg_correlation_matrix(self, test_type='2k', 
                                             days_lookback=180, min_pieces=3,
